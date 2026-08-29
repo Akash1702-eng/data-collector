@@ -17,22 +17,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Set up non-root user for Hugging Face Spaces compatibility
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH \
+    PORT=7860
+
+WORKDIR $HOME/app
+
 # Install Python requirements
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --chown=user requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Copy application files
-COPY config/ config/
-COPY utils/ utils/
-COPY backend/ backend/
-COPY app.py .
+COPY --chown=user config/ config/
+COPY --chown=user utils/ utils/
+COPY --chown=user backend/ backend/
+COPY --chown=user app.py .
 
 # Copy built frontend from stage 1
-COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
+COPY --chown=user --from=frontend-builder /app/frontend/dist frontend/dist
 
-# Expose port (Cloud Run defaults to 8080)
-ENV PORT=8080
-EXPOSE 8080
+EXPOSE 7860
 
 # Start unified FastAPI server
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
