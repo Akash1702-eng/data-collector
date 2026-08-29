@@ -3,11 +3,10 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.28.0
 python-multipart>=0.0.9
 
-# ── Hugging Face Spaces / Gradio ─────────────────────────────────────────
-gradio>=5.0.0
+# NOTE: gradio and torch are pre-installed by Hugging Face Spaces — do NOT list them here
 
 # ── Hugging Face ────────────────────────────────────────────────────────
-huggingface_hub>=0.25.0
+huggingface_hub>=0.25.0,<1.0.0   # gradio 4.x needs HfFolder which was removed in 1.0
 datasets[audio]>=3.0.0
 
 # ── TTS Engines ─────────────────────────────────────────────────────────
@@ -28,6 +27,6 @@ python-dotenv>=1.0.0
 # ── Google Gemini AI ───────────────────────────────────────────────────
 google-generativeai>=0.8.0
 
-# ── ML Backend (Coqui dependency) ──────────────────────────────────────
-torch>=2.0.0                      # CPU or CUDA — Coqui and Bark need this
+# NOTE: torch is pre-installed by HF Spaces — only uncomment for local/Render/Cloud Run:
+# torch>=2.0.0
 
