@@ -1,3 +1,15 @@
+---
+title: Voice Authenticity Studio
+emoji: 🎙️
+colorFrom: indigo
+colorTo: purple
+sdk: gradio
+sdk_version: 4.44.1
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 🎙️ Voice Authenticity Dataset Studio (React + FastAPI)
 
 A modern full-stack web app built with **React (Vite)** and **FastAPI** that **collects genuine human voice recordings** and **generates synthetic voice samples** using open-source TTS engines, then pushes everything to a Hugging Face Hub dataset for **voice-cloning fraud detection research**.
