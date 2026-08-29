@@ -185,7 +185,7 @@ def _get_fallback_prompt(language: str) -> dict:
 
 def generate_with_gemini(language: str, topic: Optional[str] = None) -> Optional[dict]:
     """
-    Calls Google Gemini API using google.generativeai to generate a random, natural sentence
+    Calls Google Gemini API using direct REST API (or SDK fallback) to generate a random, natural sentence
     suitable for speech recording.
 
     Returns dict with {native_text, romanized_text, topic} or None if failed.
@@ -197,94 +197,157 @@ def generate_with_gemini(language: str, topic: Optional[str] = None) -> Optional
     if not topic:
         topic = random.choice(TOPIC_IDEAS)
 
-        import urllib.request
-        import urllib.error
+    models_to_try = [
+        GEMINI_MODEL,
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "gemini-pro",
+    ]
 
-        # 1. Try Direct Google Gemini REST API (no deprecation warnings, lightweight & fast)
+    # De-duplicate while preserving order
+    seen = set()
+    unique_models = []
+    for m in models_to_try:
+        if m and m not in seen:
+            seen.add(m)
+            unique_models.append(m)
+
+    if language == "english_indian":
+        prompt_instruction = f"""
+Generate a short, natural, conversational 1-sentence passage in Indian English about: "{topic}".
+Requirements:
+- Exactly 1 sentence (around 14 to 20 words).
+- Natural spoken phrasing that an Indian speaker would comfortably read aloud in about 10-15 seconds.
+- Do NOT include numbering, quotes, or markdown.
+- Return ONLY a JSON object with this exact schema:
+{{
+  "native_text": "Your natural English sentence here.",
+  "romanized_text": "Your natural English sentence here.",
+  "topic": "{topic}"
+}}
+"""
+    elif language == "hindi":
+        prompt_instruction = f"""
+Generate a natural, conversational 1-sentence passage in everyday conversational Hindi about: "{topic}".
+Requirements:
+- Exactly 1 sentence (around 14 to 20 words).
+- native_text: written in standard Hindi Devanagari script (e.g. आज सुबह मैंने...).
+- romanized_text: the accurate Romanized phonetic Latin English transliteration (e.g. Aaj subah maine...).
+- Everyday spoken vocabulary (simple, warm, natural).
+- Return ONLY a JSON object with this exact schema:
+{{
+  "native_text": "हिंदी देवनागरी वाक्य यहाँ लिखें।",
+  "romanized_text": "Hindi Romanized transliteration here.",
+  "topic": "{topic}"
+}}
+"""
+    elif language == "marathi":
+        prompt_instruction = f"""
+Generate a natural, conversational 1-sentence passage in everyday Marathi about: "{topic}".
+Requirements:
+- Exactly 1 sentence (around 14 to 20 words).
+- native_text: written in Marathi Devanagari script (e.g. आज सकाळी मी...).
+- romanized_text: the accurate Romanized phonetic Latin English transliteration (e.g. Aaj sakaali mee...).
+- Everyday spoken vocabulary (natural, clear, pleasant).
+- Return ONLY a JSON object with this exact schema:
+{{
+  "native_text": "मराठी देवनागरी वाक्य येथे लिहा.",
+  "romanized_text": "Marathi Romanized transliteration here.",
+  "topic": "{topic}"
+}}
+"""
+    else:
+        prompt_instruction = f"""
+Generate a short 1-sentence natural reading passage about "{topic}".
+Return ONLY a JSON object with keys "native_text", "romanized_text", "topic".
+"""
+
+    import urllib.request
+    import urllib.error
+
+    # 1. Try Direct Google Gemini REST API (lightweight, zero deprecation warnings)
+    for model_name in unique_models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [{
+                    "parts": [{"text": prompt_instruction}]
+                }],
+                "generationConfig": {
+                    "temperature": 0.85,
+                    "topP": 0.95,
+                }
+            }
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                res_body = json.loads(response.read().decode("utf-8"))
+                candidates = res_body.get("candidates", [])
+                if candidates and "content" in candidates[0]:
+                    parts = candidates[0]["content"].get("parts", [])
+                    if parts and "text" in parts[0]:
+                        text = parts[0]["text"].strip()
+                        if text.startswith("```"):
+                            lines = text.split("\n")
+                            if lines[0].startswith("```"):
+                                lines = lines[1:]
+                            if lines and lines[-1].startswith("```"):
+                                lines = lines[:-1]
+                            text = "\n".join(lines).strip()
+                        data = json.loads(text)
+                        if data.get("native_text") and data.get("romanized_text"):
+                            logger.info(f"Generated prompt with Gemini ({model_name}) for {language}: {data['topic']}")
+                            return {
+                                "native_text": data["native_text"].strip(),
+                                "romanized_text": data["romanized_text"].strip(),
+                                "topic": data.get("topic", topic),
+                            }
+        except urllib.error.HTTPError as http_err:
+            logger.debug(f"Gemini REST model {model_name} HTTP {http_err.code}: {http_err.reason}")
+            continue
+        except Exception as e:
+            logger.debug(f"Gemini REST model {model_name} error: {e}")
+            continue
+
+    # 2. Fallback to google.generativeai if installed
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
         for model_name in unique_models:
             try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-                payload = {
-                    "contents": [{
-                        "parts": [{"text": prompt_instruction}]
-                    }],
-                    "generationConfig": {
-                        "temperature": 0.85,
-                        "topP": 0.95,
-                    }
-                }
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
+                model = genai.GenerativeModel(model_name)
+                res = model.generate_content(
+                    prompt_instruction,
+                    generation_config={"temperature": 0.85, "top_p": 0.95}
                 )
-                with urllib.request.urlopen(req, timeout=12) as response:
-                    res_body = json.loads(response.read().decode("utf-8"))
-                    candidates = res_body.get("candidates", [])
-                    if candidates and "content" in candidates[0]:
-                        parts = candidates[0]["content"].get("parts", [])
-                        if parts and "text" in parts[0]:
-                            text = parts[0]["text"].strip()
-                            if text.startswith("```"):
-                                lines = text.split("\n")
-                                if lines[0].startswith("```"):
-                                    lines = lines[1:]
-                                if lines and lines[-1].startswith("```"):
-                                    lines = lines[:-1]
-                                text = "\n".join(lines).strip()
-                            data = json.loads(text)
-                            if data.get("native_text") and data.get("romanized_text"):
-                                logger.info(f"Generated prompt with Gemini ({model_name}) for {language}: {data['topic']}")
-                                return {
-                                    "native_text": data["native_text"].strip(),
-                                    "romanized_text": data["romanized_text"].strip(),
-                                    "topic": data.get("topic", topic),
-                                }
-            except urllib.error.HTTPError as http_err:
-                logger.debug(f"Gemini REST model {model_name} HTTP {http_err.code}: {http_err.reason}")
+                text = res.text.strip()
+                if text.startswith("```"):
+                    lines = text.split("\n")
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    text = "\n".join(lines).strip()
+                data = json.loads(text)
+                if data.get("native_text") and data.get("romanized_text"):
+                    return {
+                        "native_text": data["native_text"].strip(),
+                        "romanized_text": data["romanized_text"].strip(),
+                        "topic": data.get("topic", topic),
+                    }
+            except Exception:
                 continue
-            except Exception as e:
-                logger.debug(f"Gemini REST model {model_name} error: {e}")
-                continue
+    except Exception:
+        pass
 
-        # 2. Fallback to google.generativeai / google.genai if installed
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=GEMINI_API_KEY)
-            for model_name in unique_models:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    res = model.generate_content(
-                        prompt_instruction,
-                        generation_config={"temperature": 0.85, "top_p": 0.95}
-                    )
-                    text = res.text.strip()
-                    if text.startswith("```"):
-                        lines = text.split("\n")
-                        if lines[0].startswith("```"):
-                            lines = lines[1:]
-                        if lines and lines[-1].startswith("```"):
-                            lines = lines[:-1]
-                        text = "\n".join(lines).strip()
-                    data = json.loads(text)
-                    if data.get("native_text") and data.get("romanized_text"):
-                        return {
-                            "native_text": data["native_text"].strip(),
-                            "romanized_text": data["romanized_text"].strip(),
-                            "topic": data.get("topic", topic),
-                        }
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    logger.info("Using curated multilingual fallback prompt pool for this session.")
+    return None
 
-        logger.info("Using curated multilingual fallback prompt pool for this session.")
-        return None
-
-    except Exception as e:
-        logger.debug(f"Gemini generation fallback: {e}")
-        return None
 
 
 def generate_random_prompt(language: str, prompt_id: Optional[str] = None, topic: Optional[str] = None) -> dict:
