@@ -1,0 +1,92 @@
+{
+  "english_indian": [
+    {
+      "id": "en_01",
+      "native_text": "The quick brown fox jumps over the lazy dog near the buzzing hive.",
+      "romanized_text": "The quick brown fox jumps over the lazy dog near the buzzing hive.",
+      "type": "pangram",
+      "note": "Read naturally at a comfortable pace."
+    },
+    {
+      "id": "en_02",
+      "native_text": "My account number is four seven two nine zero one eight three five six.",
+      "romanized_text": "My account number is four seven two nine zero one eight three five six.",
+      "type": "digits",
+      "note": "Read each digit clearly, as if giving your bank details over the phone."
+    },
+    {
+      "id": "en_03",
+      "native_text": "Can you please transfer five thousand rupees to my brother's account?",
+      "romanized_text": "Can you please transfer five thousand rupees to my brother's account?",
+      "type": "freeform",
+      "note": "Read as a polite request, as if speaking to a bank agent."
+    },
+    {
+      "id": "en_open_01",
+      "native_text": "In your own words, describe what you did this morning. Speak for about 15 seconds.",
+      "romanized_text": "In your own words, describe what you did this morning. Speak for about 15 seconds.",
+      "type": "open_ended",
+      "note": "Speak freely in your own words for about 15 seconds."
+    }
+  ],
+  "hindi": [
+    {
+      "id": "hi_01",
+      "native_text": "चार चाँद लगाने वाला यह जुमला हर शब्द को छू कर गुज़रता है।",
+      "romanized_text": "Chaar chaand lagaane waalaa yeh jumla har shabd ko chhoo kar guzarta hai.",
+      "type": "pangram",
+      "note": "Read naturally at a comfortable pace."
+    },
+    {
+      "id": "hi_02",
+      "native_text": "मेरा खाता नंबर है चार सात दो नौ शून्य एक आठ तीन पाँच छह।",
+      "romanized_text": "Mera khaata number hai chaar saat do nau shunya ek aath teen paanch chhah.",
+      "type": "digits",
+      "note": "Read each digit clearly, as if giving your bank details over the phone."
+    },
+    {
+      "id": "hi_03",
+      "native_text": "क्या आप मेरे भाई के खाते में पाँच हज़ार रुपये ट्रांसफर कर सकते हैं?",
+      "romanized_text": "Kya aap mere bhai ke khaate mein paanch hazaar rupaye transfer kar sakte hain?",
+      "type": "freeform",
+      "note": "Read as a polite request, as if speaking to a bank agent."
+    },
+    {
+      "id": "hi_open_01",
+      "native_text": "अपने शब्दों में बताइए कि आज सुबह आपने क्या किया। लगभग 15 सेकंड बोलिए।",
+      "romanized_text": "Apne shabdon mein bataiye ki aaj subah aapne kya kiya. Lagbhag pandrah second boliye.",
+      "type": "open_ended",
+      "note": "Apne shabdon mein lagbhag 15 second boliye."
+    }
+  ],
+  "marathi": [
+    {
+      "id": "mr_01",
+      "native_text": "आळशी कुत्र्या जवळ एक चतुर कोल्हा वेगाने उडी मारून गेला.",
+      "romanized_text": "Aalshi kutrya javal ek chatoor kolhaa vegaane udee maaroon gela.",
+      "type": "pangram",
+      "note": "Read naturally at a comfortable pace."
+    },
+    {
+      "id": "mr_02",
+      "native_text": "माझा खाते क्रमांक आहे चार सात दोन नऊ शून्य एक आठ तीन पाच सहा.",
+      "romanized_text": "Maaza khaate kramank aahe chaar saat don nau shunya ek aath teen paach sahaa.",
+      "type": "digits",
+      "note": "Read each digit clearly, as if giving your bank details over the phone."
+    },
+    {
+      "id": "mr_03",
+      "native_text": "तुम्ही माझ्या भावाच्या खात्यात पाच हजार रुपये ट्रान्सफर कराल का, प्लीज?",
+      "romanized_text": "Tumhi maazya bhaavaachya khatyaat paach hazaar rupaye transfer karaal kaa, please?",
+      "type": "freeform",
+      "note": "Read as a polite request, as if speaking to a bank agent."
+    },
+    {
+      "id": "mr_open_01",
+      "native_text": "तुमच्या स्वतःच्या शब्दांत सांगा की आज सकाळी तुम्ही काय केले. साधारण 15 सेकंद बोला.",
+      "romanized_text": "Tumchya swatahchya shabdaat saanga ki aaj sakaali tumhi kaay kela. Saadhaaran pandrah second bola.",
+      "type": "open_ended",
+      "note": "Aaplya swatahchya shabdaat sadharan 15 second bola."
+    }
+  ]
+}

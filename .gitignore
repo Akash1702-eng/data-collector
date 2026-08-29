@@ -1,0 +1,15 @@
+# ── Voice Authenticity Dataset Collector ─────────────────────────────
+# Secrets & local directories
+.env
+local_fallback/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Node / Frontend dependencies
+node_modules/
+frontend/node_modules/
+.vite/
+*.log
