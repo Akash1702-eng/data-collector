@@ -4,7 +4,7 @@ uvicorn[standard]>=0.28.0
 python-multipart>=0.0.9
 
 # ── Hugging Face Spaces / Gradio ─────────────────────────────────────────
-gradio>=4.0.0
+gradio>=5.0.0
 
 # ── Hugging Face ────────────────────────────────────────────────────────
 huggingface_hub>=0.25.0
