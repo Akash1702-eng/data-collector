@@ -2,6 +2,7 @@
 fastapi>=0.110.0
 uvicorn[standard]>=0.28.0
 python-multipart>=0.0.9
+jinja2>=3.1.2,<3.1.5              # 3.1.5+ breaks Gradio template caching (unhashable dict)
 
 # NOTE: gradio and torch are pre-installed by Hugging Face Spaces — do NOT list them here
 
