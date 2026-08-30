@@ -1,19 +1,21 @@
 /**
- * Strict Speech-to-Text Word Matching Engine
+ * Hybrid Speech Recognition Engine
  *
- * CORE RULE: Words ONLY change color when the Web Speech API recognizes
- * that the user has spoken those specific words from the prompt.
- * NO energy-based, time-based, or cadence-based auto-advancing.
+ * Strategy:
+ *  1. PRIMARY: Web Speech API STT — exact word matching (works on desktop)
+ *  2. FALLBACK: Energy-based voice tracking — activates ONLY when STT
+ *     has definitively failed (mobile browsers where MediaRecorder blocks STT)
  *
- * If the browser does not support Web Speech API, words will not
- * change color (the recording still works, just without live highlighting).
+ * The energy fallback uses a HIGH threshold (avg energy >= 22) so ambient
+ * noise and silence never trigger word advancement. Only clear, sustained
+ * speech directed at the microphone causes words to advance.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 
-// Multilingual Number Dictionary
+/* ── Multilingual Number Dictionary ───────────────────────────── */
 const NUMBER_GROUPS = [
-  ['0', 'zero', 'oh', 'o', 'शून्य', '०', 'shunya', 'shoonya', 'null'],
+  ['0', 'zero', 'oh', 'o', 'शून्य', '०', 'shunya', 'shoonya'],
   ['1', 'one', 'एक', '१', 'ek', 'ik'],
   ['2', 'two', 'दो', 'दोन', '२', 'do', 'don', 'to'],
   ['3', 'three', 'तीन', '३', 'teen', 'tin'],
@@ -24,85 +26,67 @@ const NUMBER_GROUPS = [
   ['8', 'eight', 'आठ', '८', 'aath', 'ath'],
   ['9', 'nine', 'नौ', 'नऊ', '९', 'nau', 'nav', 'nou'],
   ['10', 'ten', 'दस', 'दहा', '१०', 'das', 'daha'],
-  ['15', 'fifteen', 'पंद्रह', 'पंधरा', '१५', 'pandrah', 'pandhara'],
-  ['1000', 'thousand', 'हज़ार', 'हजार', 'hazaar', 'hazar'],
 ];
 
-const DEVA_DIGIT_MAP = {
-  '०': '0', '१': '1', '२': '2', '३': '3', '४': '4',
-  '५': '5', '६': '6', '७': '7', '८': '8', '९': '9'
-};
+const DEVA_DIGIT = { '०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9' };
 
-function normalizeText(str) {
-  if (!str) return '';
-  return str
-    .toLowerCase()
-    .replace(/[\u093C]/g, '')
-    .replace(/\u0901/g, '\u0902')
+function norm(s) {
+  if (!s) return '';
+  return s.toLowerCase()
+    .replace(/[\u093C]/g, '')            // nukta
+    .replace(/\u0901/g, '\u0902')        // chandrabindu → anusvara
     .replace(/[.,/#!$%^&*;:{}=\-_`~()?"''।?,।|«»""॥\u200B-\u200D]/g, '')
     .trim();
 }
 
-function wordsMatch(targetWord, targetRomanizedWord, spokenWord) {
-  const t = normalizeText(targetWord);
-  const tr = normalizeText(targetRomanizedWord);
-  const s = normalizeText(spokenWord);
-
+function wordsMatch(target, targetRom, spoken) {
+  const t = norm(target), tr = norm(targetRom), s = norm(spoken);
   if (!s) return false;
   if (t && t === s) return true;
   if (tr && tr === s) return true;
 
-  for (const group of NUMBER_GROUPS) {
-    const sInGroup = group.includes(s) || (DEVA_DIGIT_MAP[s] && group.includes(DEVA_DIGIT_MAP[s]));
-    if (sInGroup) {
-      if (t && (group.includes(t) || (DEVA_DIGIT_MAP[t] && group.includes(DEVA_DIGIT_MAP[t])))) return true;
-      if (tr && group.includes(tr)) return true;
+  // Number group match
+  for (const g of NUMBER_GROUPS) {
+    const sIn = g.includes(s) || (DEVA_DIGIT[s] && g.includes(DEVA_DIGIT[s]));
+    if (sIn) {
+      if (t && (g.includes(t) || (DEVA_DIGIT[t] && g.includes(DEVA_DIGIT[t])))) return true;
+      if (tr && g.includes(tr)) return true;
     }
   }
 
-  if (DEVA_DIGIT_MAP[s]) {
-    const digitStr = DEVA_DIGIT_MAP[s];
-    if (t === digitStr || tr === digitStr) return true;
-  }
+  // Digit mapping
+  if (DEVA_DIGIT[s] && (t === DEVA_DIGIT[s] || tr === DEVA_DIGIT[s])) return true;
 
-  if (t && t.length >= 3 && s.length >= 3) {
-    if (t.startsWith(s) || s.startsWith(t)) return true;
-  }
-  if (tr && tr.length >= 3 && s.length >= 3) {
-    if (tr.startsWith(s) || s.startsWith(tr)) return true;
-  }
+  // Prefix match (≥3 chars)
+  if (t && t.length >= 3 && s.length >= 3 && (t.startsWith(s) || s.startsWith(t))) return true;
+  if (tr && tr.length >= 3 && s.length >= 3 && (tr.startsWith(s) || s.startsWith(tr))) return true;
 
-  const isFuzzyMatch = (str) => {
-    if (!str || str.length < 4 || s.length < 4) return false;
-    let diff = 0;
-    const minLen = Math.min(str.length, s.length);
-    for (let i = 0; i < minLen; i++) {
-      if (str[i] !== s[i]) diff++;
-    }
-    diff += Math.abs(str.length - s.length);
-    return diff <= 1;
+  // 1-char fuzzy
+  const fuzzy = (a) => {
+    if (!a || a.length < 4 || s.length < 4) return false;
+    let d = 0;
+    for (let i = 0; i < Math.min(a.length, s.length); i++) { if (a[i] !== s[i]) d++; }
+    return (d + Math.abs(a.length - s.length)) <= 1;
   };
-
-  if (isFuzzyMatch(t) || isFuzzyMatch(tr)) return true;
-
-  return false;
+  return fuzzy(t) || fuzzy(tr);
 }
 
-function expandSpokenTokens(rawTokens) {
-  const expanded = [];
-  for (const raw of rawTokens) {
-    const clean = normalizeText(raw);
-    if (!clean) continue;
-    if (/^[\d०-९]+$/.test(clean) && clean.length > 1) {
-      for (const char of clean) {
-        expanded.push(DEVA_DIGIT_MAP[char] || char);
-      }
+function expandTokens(tokens) {
+  const out = [];
+  for (const raw of tokens) {
+    const c = norm(raw);
+    if (!c) continue;
+    if (/^[\d०-९]+$/.test(c) && c.length > 1) {
+      for (const ch of c) out.push(DEVA_DIGIT[ch] || ch);
     } else {
-      expanded.push(raw);
+      out.push(raw);
     }
   }
-  return expanded;
+  return out;
 }
+
+
+/* ── Hook ────────────────────────────────────────────────────── */
 
 export function useSpeechRecognition({
   promptText = '',
@@ -117,16 +101,30 @@ export function useSpeechRecognition({
   const [recognizedTranscript, setRecognizedTranscript] = useState('');
   const [isCompleted, setIsCompleted] = useState(false);
 
-  const recognitionRef = useRef(null);
-  const completedRef = useRef(false);
-  const isListeningRef = useRef(false);
-  const onAllWordsReadRef = useRef(onAllWordsRead);
-  const autoCompleteRef = useRef(autoComplete);
+  const recognitionRef     = useRef(null);
+  const completedRef       = useRef(false);
+  const isListeningRef     = useRef(false);
+  const onAllWordsReadRef  = useRef(onAllWordsRead);
+  const autoCompleteRef    = useRef(autoComplete);
+  const readWordIndexRef   = useRef(-1);
+
+  // STT health tracking — detect if STT is alive or dead
+  const sttGotResultRef    = useRef(false);   // true once any onresult fires
+  const sttFailedRef       = useRef(false);   // true when we've given up on STT
+  const recordStartTimeRef = useRef(0);
+  const energyCheckTimerRef = useRef(null);
+  const voiceDetectedRef   = useRef(false);   // true if we've seen energy while STT silent
+
+  // Energy fallback state
+  const activeSpeechMsRef  = useRef(0);
+  const lastEnergyTimeRef  = useRef(0);
+  const MS_PER_WORD        = 420; // ~420ms per word at normal reading pace
+  const ENERGY_THRESHOLD   = 22;  // average energy; well above ambient noise (~2-8)
 
   useEffect(() => { onAllWordsReadRef.current = onAllWordsRead; }, [onAllWordsRead]);
   useEffect(() => { autoCompleteRef.current = autoComplete; }, [autoComplete]);
 
-  const promptWordsRef = useRef([]);
+  const promptWordsRef    = useRef([]);
   const romanizedWordsRef = useRef([]);
 
   useEffect(() => {
@@ -134,74 +132,132 @@ export function useSpeechRecognition({
     romanizedWordsRef.current = romanizedText ? romanizedText.trim().split(/\s+/).filter(Boolean) : [];
   }, [promptText, romanizedText]);
 
-  // Check browser SpeechRecognition support
+  // Check browser support
   useEffect(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    setIsSupported(Boolean(SR));
+    setIsSupported(Boolean(window.SpeechRecognition || window.webkitSpeechRecognition));
   }, []);
 
-  // Reset state when prompt changes
+  // Reset on prompt change
   useEffect(() => {
     setReadWordIndex(-1);
+    readWordIndexRef.current = -1;
     setRecognizedTranscript('');
     setIsCompleted(false);
     completedRef.current = false;
+    sttGotResultRef.current = false;
+    sttFailedRef.current = false;
+    voiceDetectedRef.current = false;
+    activeSpeechMsRef.current = 0;
+    lastEnergyTimeRef.current = 0;
   }, [promptText]);
 
-  // Clean up on unmount
+  // Cleanup
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort(); } catch (e) {}
-      }
+      if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch(e){} }
+      if (energyCheckTimerRef.current) clearTimeout(energyCheckTimerRef.current);
     };
   }, []);
 
+  /* ── Completion trigger ──────────────────────────── */
   const triggerCompletion = useCallback(() => {
     if (completedRef.current) return;
     completedRef.current = true;
     setIsCompleted(true);
-    setReadWordIndex(promptWordsRef.current.length - 1);
+    const lastIdx = promptWordsRef.current.length - 1;
+    setReadWordIndex(lastIdx);
+    readWordIndexRef.current = lastIdx;
 
     if (autoCompleteRef.current && onAllWordsReadRef.current) {
-      setTimeout(() => {
-        if (onAllWordsReadRef.current) {
-          onAllWordsReadRef.current();
-        }
-      }, 800);
+      setTimeout(() => { onAllWordsReadRef.current?.(); }, 800);
     }
   }, []);
 
-  const startListening = useCallback(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn('[SpeechRecognition] Not supported in this browser.');
-      return;
+  /* ── Update readWordIndex (shared by both STT and energy) ── */
+  const advanceToIndex = useCallback((newIdx) => {
+    const clamped = Math.min(newIdx, promptWordsRef.current.length - 1);
+    if (clamped > readWordIndexRef.current) {
+      readWordIndexRef.current = clamped;
+      setReadWordIndex(clamped);
+    }
+    if (clamped >= Math.ceil(promptWordsRef.current.length * 0.85) - 1) {
+      triggerCompletion();
+    }
+  }, [triggerCompletion]);
+
+  /* ── Energy-based fallback: called by AudioRecorder every ~50ms ── */
+  const feedAudioEnergy = useCallback((energy) => {
+    if (!isListeningRef.current || completedRef.current) return;
+
+    const now = Date.now();
+
+    // If STT is working, don't use energy fallback at all
+    if (sttGotResultRef.current) return;
+
+    // Track that voice was detected (for STT failure detection)
+    if (energy >= ENERGY_THRESHOLD) {
+      voiceDetectedRef.current = true;
     }
 
+    // Only activate energy fallback after we've confirmed STT has failed
+    if (!sttFailedRef.current) {
+      // Check: if 3+ seconds have passed with voice detected but no STT results → STT failed
+      const elapsed = now - recordStartTimeRef.current;
+      if (elapsed > 3000 && voiceDetectedRef.current && !sttGotResultRef.current) {
+        console.log('[SpeechRecognition] STT produced no results after 3s with voice detected. Activating energy fallback.');
+        sttFailedRef.current = true;
+      } else {
+        return; // Don't use energy fallback yet
+      }
+    }
+
+    // ── Energy fallback active ──
+    if (energy >= ENERGY_THRESHOLD) {
+      // User is speaking
+      const delta = lastEnergyTimeRef.current ? (now - lastEnergyTimeRef.current) : 50;
+      activeSpeechMsRef.current += Math.min(delta, 100); // cap at 100ms per tick
+
+      const wordsShouldBeRead = Math.floor(activeSpeechMsRef.current / MS_PER_WORD);
+      if (wordsShouldBeRead > 0) {
+        advanceToIndex(wordsShouldBeRead - 1);
+      }
+    }
+    // When energy < threshold: do NOT accumulate — words freeze in place
+
+    lastEnergyTimeRef.current = now;
+  }, [advanceToIndex]);
+
+  /* ── Start listening ────────────────────────────── */
+  const startListening = useCallback(() => {
     isListeningRef.current = true;
     setIsListening(true);
     completedRef.current = false;
     setIsCompleted(false);
     setReadWordIndex(-1);
+    readWordIndexRef.current = -1;
     setRecognizedTranscript('');
+    sttGotResultRef.current = false;
+    sttFailedRef.current = false;
+    voiceDetectedRef.current = false;
+    activeSpeechMsRef.current = 0;
+    lastEnergyTimeRef.current = 0;
+    recordStartTimeRef.current = Date.now();
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      // No STT support at all — immediately enable energy fallback
+      sttFailedRef.current = true;
+      console.log('[SpeechRecognition] API not available. Using energy fallback.');
+      return;
+    }
 
     try {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort(); } catch (e) {}
-      }
+      if (recognitionRef.current) { try { recognitionRef.current.abort(); } catch(e){} }
 
-      const recognition = new SpeechRecognition();
+      const recognition = new SR();
       recognitionRef.current = recognition;
 
-      if (language === 'hindi') {
-        recognition.lang = 'hi-IN';
-      } else if (language === 'marathi') {
-        recognition.lang = 'mr-IN';
-      } else {
-        recognition.lang = 'en-IN';
-      }
-
+      recognition.lang = language === 'hindi' ? 'hi-IN' : language === 'marathi' ? 'mr-IN' : 'en-IN';
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.maxAlternatives = 3;
@@ -209,7 +265,9 @@ export function useSpeechRecognition({
       recognition.onresult = (event) => {
         if (!isListeningRef.current || completedRef.current) return;
 
-        // Build full transcript from all result segments
+        // Mark STT as alive — this disables energy fallback permanently for this session
+        sttGotResultRef.current = true;
+
         let fullTranscript = '';
         for (let i = 0; i < event.results.length; i++) {
           fullTranscript += event.results[i][0].transcript + ' ';
@@ -217,80 +275,78 @@ export function useSpeechRecognition({
         fullTranscript = fullTranscript.trim();
         setRecognizedTranscript(fullTranscript);
 
-        const rawTokens = fullTranscript.split(/\s+/).filter(Boolean);
-        const spokenTokens = expandSpokenTokens(rawTokens);
-        const targetWords = promptWordsRef.current;
-        const targetRomanized = romanizedWordsRef.current;
+        const spokenTokens = expandTokens(fullTranscript.split(/\s+/).filter(Boolean));
+        const tw = promptWordsRef.current;
+        const tr = romanizedWordsRef.current;
+        if (!tw.length || !spokenTokens.length) return;
 
-        if (!targetWords.length || !spokenTokens.length) return;
-
-        // Match spoken tokens against prompt words sequentially
-        let currentTargetIdx = 0;
-        for (let sIdx = 0; sIdx < spokenTokens.length && currentTargetIdx < targetWords.length; sIdx++) {
-          const spoken = spokenTokens[sIdx];
-
-          // Lookahead up to 3 words to handle skipped filler words
-          let matchedOffset = -1;
-          for (let offset = 0; offset <= 3 && currentTargetIdx + offset < targetWords.length; offset++) {
-            const tw = targetWords[currentTargetIdx + offset];
-            const tr = targetRomanized[currentTargetIdx + offset] || '';
-            if (wordsMatch(tw, tr, spoken)) {
-              matchedOffset = offset;
+        // Sequential matching with lookahead
+        let targetIdx = 0;
+        for (let s = 0; s < spokenTokens.length && targetIdx < tw.length; s++) {
+          for (let off = 0; off <= 3 && targetIdx + off < tw.length; off++) {
+            if (wordsMatch(tw[targetIdx + off], tr[targetIdx + off] || '', spokenTokens[s])) {
+              targetIdx += off + 1;
               break;
             }
           }
-
-          if (matchedOffset >= 0) {
-            currentTargetIdx += matchedOffset + 1;
-          }
         }
 
-        // Only update readWordIndex based on confirmed spoken word matches
-        const newReadIdx = Math.min(currentTargetIdx - 1, targetWords.length - 1);
-        if (newReadIdx >= 0) {
-          setReadWordIndex((prev) => Math.max(prev, newReadIdx));
+        if (targetIdx > 0) {
+          advanceToIndex(targetIdx - 1);
         }
 
-        // Complete when >= 85% of words are matched
-        if (currentTargetIdx >= Math.ceil(targetWords.length * 0.85)) {
+        if (targetIdx >= Math.ceil(tw.length * 0.85)) {
           triggerCompletion();
         }
       };
 
       recognition.onerror = (e) => {
-        if (e.error !== 'no-speech' && e.error !== 'aborted') {
-          console.debug('[SpeechRecognition]', e.error);
+        if (e.error === 'not-allowed' || e.error === 'audio-capture' || e.error === 'service-not-allowed') {
+          console.log(`[SpeechRecognition] Error: ${e.error}. Switching to energy fallback.`);
+          sttFailedRef.current = true;
         }
       };
 
       recognition.onend = () => {
-        // Auto-restart while still recording
         if (isListeningRef.current && !completedRef.current) {
-          try { recognition.start(); } catch (e) {}
+          try { recognition.start(); } catch(e) {}
         }
       };
 
       recognition.start();
     } catch (err) {
       console.warn('[SpeechRecognition] Could not start:', err);
+      sttFailedRef.current = true;
     }
-  }, [language, triggerCompletion]);
+  }, [language, advanceToIndex, triggerCompletion]);
 
+  /* ── Stop listening ─────────────────────────────── */
   const stopListening = useCallback(() => {
     isListeningRef.current = false;
     setIsListening(false);
     if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch (e) {}
+      try { recognitionRef.current.stop(); } catch(e) {}
       recognitionRef.current = null;
+    }
+    if (energyCheckTimerRef.current) {
+      clearTimeout(energyCheckTimerRef.current);
+      energyCheckTimerRef.current = null;
     }
   }, []);
 
+  /* ── Reset ──────────────────────────────────────── */
   const reset = useCallback(() => {
     stopListening();
     setReadWordIndex(-1);
+    readWordIndexRef.current = -1;
     setRecognizedTranscript('');
     setIsCompleted(false);
     completedRef.current = false;
+    sttGotResultRef.current = false;
+    sttFailedRef.current = false;
+    voiceDetectedRef.current = false;
+    activeSpeechMsRef.current = 0;
+    lastEnergyTimeRef.current = 0;
   }, [stopListening]);
 
   return {
@@ -299,6 +355,7 @@ export function useSpeechRecognition({
     readWordIndex,
     recognizedTranscript,
     isCompleted,
+    feedAudioEnergy,
     startListening,
     stopListening,
     reset,
