@@ -52,21 +52,27 @@ export default function StudioView({
   const promptDisplayText = currentPrompt.native_text || currentPrompt.text || currentPrompt.romanized_text || '';
   const words = promptDisplayText.trim().split(/\s+/).filter(Boolean);
 
-  // Universal Speech Recognition & Voice-Paced Teleprompter hook
+  const isAiPrompt =
+    currentPrompt.is_ai_generated ||
+    currentPrompt.type === 'ai_generated' ||
+    currentPrompt.type === 'open_ended' ||
+    currentPrompt.id?.includes('_open_');
+
+  // Strict Speech Recognition hook
   const {
     isSupported,
     isListening,
     readWordIndex,
-    currentWordIndex,
     recognizedTranscript,
     isCompleted,
-    feedAudioEnergy,
     startListening,
     stopListening,
     reset: resetSpeech,
   } = useSpeechRecognition({
     promptText: promptDisplayText,
+    romanizedText: currentPrompt.romanized_text || '',
     language: currentPrompt.language,
+    isOpenEnded: isAiPrompt || currentPrompt.type === 'open_ended',
     autoComplete: autoAdvance,
     onAllWordsRead: () => {
       // Trigger recording stop
@@ -124,12 +130,6 @@ export default function StudioView({
     if (lang === 'marathi') return 'badge-amber';
     return 'badge-indigo';
   };
-
-  const isAiPrompt =
-    currentPrompt.is_ai_generated ||
-    currentPrompt.type === 'ai_generated' ||
-    currentPrompt.type === 'open_ended' ||
-    currentPrompt.id?.includes('_open_');
 
   const handleRegenerateClick = async () => {
     if (isRegenerating || !onRegeneratePrompt) return;
@@ -201,7 +201,7 @@ export default function StudioView({
 
           {isSupported && (
             <span className="badge badge-emerald" title="Live speech tracking active">
-              🎙️ LIVE VOICE TRACKING
+              🎙️ LIVE SPEECH TRACKING
             </span>
           )}
 
@@ -240,7 +240,7 @@ export default function StudioView({
             let status = 'pending';
             if (wIdx <= readWordIndex) {
               status = 'read';
-            } else if (isListening && (wIdx === currentWordIndex || wIdx === readWordIndex + 1)) {
+            } else if (isListening && wIdx === readWordIndex + 1) {
               status = 'current';
             }
 
@@ -297,13 +297,20 @@ export default function StudioView({
               </span>
             </div>
           </div>
-        ) : isListening ? (
+        ) : isListening && readWordIndex >= 0 ? (
           <div className="karaoke-status-bar">
             <span className="speech-live-badge">
               <Mic size={14} className="spin" />
               <span>
-                Words Read: {Math.min(Math.max(readWordIndex + 1, currentWordIndex > 0 ? currentWordIndex : 0), words.length)} / {words.length} ({Math.round((Math.min(Math.max(readWordIndex + 1, currentWordIndex > 0 ? currentWordIndex : 0), words.length) / Math.max(words.length, 1)) * 100)}%)
+                Words Read: {Math.min(readWordIndex + 1, words.length)} / {words.length} ({Math.round(((readWordIndex + 1) / words.length) * 100)}%)
               </span>
+            </span>
+          </div>
+        ) : isListening ? (
+          <div className="karaoke-status-bar" style={{ background: '#f8fafc', borderColor: '#e2e8f0' }}>
+            <span className="speech-live-badge" style={{ color: 'var(--text-secondary)' }}>
+              <Mic size={14} />
+              <span>Listening... Speak the words displayed on screen</span>
             </span>
           </div>
         ) : null}
@@ -353,10 +360,9 @@ export default function StudioView({
         minSeconds={1.0}
         maxSeconds={15.0}
         stopTrigger={stopTrigger}
-        onAudioEnergy={feedAudioEnergy}
-        onStart={({ analyser } = {}) => {
+        onStart={() => {
           resetSpeech();
-          startListening({ analyser });
+          startListening();
         }}
         onStop={() => {
           stopListening();

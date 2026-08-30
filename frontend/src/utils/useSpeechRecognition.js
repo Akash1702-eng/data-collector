@@ -1,11 +1,15 @@
 /**
- * Universal Multilingual Speech & Cadence Teleprompter Engine
+ * Strict Multilingual Speech-Driven Recognition & Word Highlighting Engine
  *
- * Guarantees 100% reliable word-by-word color highlighting on all devices:
- * 1. Mobile browsers (iOS Safari, Android Chrome, mobile WebViews, LAN HTTP, Render production).
- * 2. Real-time microphone audio energy tracking from Web Audio API.
- * 3. Continuous cadence teleprompter pacing that starts highlighting words the instant recording begins.
- * 4. Additive Web Speech API STT boost for instant exact-word jumping when STT is available.
+ * Requirements:
+ * 1. STRICT SPEECH VERIFICATION: Words ONLY change color when the user ACTUALLY speaks
+ *    the words displayed in the prompt.
+ * 2. NO time-based automatic progression on silence.
+ * 3. High-accuracy multilingual matching for English (Indian), Hindi (Devanagari),
+ *    and Marathi (Devanagari).
+ * 4. Automatic decomposition of digit strings (e.g. STT output "4729018356" matches "4", "7", "2"...).
+ * 5. Script and transliteration resilience: checks both native Devanagari and romanized text.
+ * 6. Conjoined word and Nukta/Anusvara normalization.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -17,11 +21,14 @@ const NUMBER_GROUPS = [
   ['2', 'two', 'दो', 'दोन', '२', 'do', 'don', 'to'],
   ['3', 'three', 'तीन', '३', 'teen', 'tin'],
   ['4', 'four', 'चार', '४', 'chaar', 'char'],
-  ['5', 'five', 'पाँच', 'पाच', '५', 'paanch', 'paach', 'panch'],
-  ['6', 'six', 'छह', 'सहा', '६', 'chhah', 'saha', 'che'],
+  ['5', 'five', 'पाँच', 'पांच', 'पाच', '५', 'paanch', 'paach', 'panch'],
+  ['6', 'six', 'छह', 'सहा', '६', 'chhah', 'saha', 'che', 'chha'],
   ['7', 'seven', 'सात', '७', 'saat', 'sat'],
   ['8', 'eight', 'आठ', '८', 'aath', 'ath'],
   ['9', 'nine', 'नौ', 'नऊ', '९', 'nau', 'nav', 'nou'],
+  ['10', 'ten', 'दस', 'दहा', '१०', 'das', 'daha'],
+  ['15', 'fifteen', 'पंद्रह', 'पंधरा', '१५', 'pandrah', 'pandhara'],
+  ['1000', 'thousand', 'हज़ार', 'हजार', 'hazaar', 'hazar'],
 ];
 
 // Devanagari digit to standard digit map
@@ -30,50 +37,68 @@ const DEVA_DIGIT_MAP = {
   '५': '5', '६': '6', '७': '7', '८': '8', '९': '9'
 };
 
-function normalizeWord(str) {
-  return (str || '')
+function normalizeText(str) {
+  if (!str) return '';
+  return str
     .toLowerCase()
-    .replace(/[.,/#!$%^&*;:{}=\-_`~()?"'’।?,।|«»“”।]/g, '')
+    // Strip Nukta (़) combining character
+    .replace(/[\u093C]/g, '')
+    // Normalize Chandrabindu to Anusvara
+    .replace(/\u0901/g, '\u0902')
+    // Remove all punctuation marks (English, Devanagari, quotes, symbols)
+    .replace(/[.,/#!$%^&*;:{}=\-_`~()?"'’।?,।|«»“”॥\u200B-\u200D]/g, '')
     .trim();
 }
 
-function wordsMatch(targetWord, spokenWord) {
-  const t = normalizeWord(targetWord);
-  const s = normalizeWord(spokenWord);
+function wordsMatch(targetWord, targetRomanizedWord, spokenWord) {
+  const t = normalizeText(targetWord);
+  const tr = normalizeText(targetRomanizedWord);
+  const s = normalizeText(spokenWord);
 
-  if (!t || !s) return false;
-  if (t === s) return true;
+  if (!s) return false;
+  if (t && t === s) return true;
+  if (tr && tr === s) return true;
 
   // Check multilingual number matches
   for (const group of NUMBER_GROUPS) {
-    if (group.includes(t) && group.includes(s)) {
-      return true;
+    const sInGroup = group.includes(s) || (DEVA_DIGIT_MAP[s] && group.includes(DEVA_DIGIT_MAP[s]));
+    if (sInGroup) {
+      if (t && (group.includes(t) || (DEVA_DIGIT_MAP[t] && group.includes(DEVA_DIGIT_MAP[t])))) {
+        return true;
+      }
+      if (tr && group.includes(tr)) {
+        return true;
+      }
     }
   }
 
   // Devanagari digit to standard digit
-  if (DEVA_DIGIT_MAP[s] && NUMBER_GROUPS[parseInt(DEVA_DIGIT_MAP[s], 10)]?.includes(t)) {
-    return true;
-  }
-  if (DEVA_DIGIT_MAP[t] && NUMBER_GROUPS[parseInt(DEVA_DIGIT_MAP[t], 10)]?.includes(s)) {
-    return true;
+  if (DEVA_DIGIT_MAP[s]) {
+    const digitStr = DEVA_DIGIT_MAP[s];
+    if (t === digitStr || tr === digitStr) return true;
   }
 
-  // Substring / prefix / conjoined word matching (e.g. "कुत्र्याजवळ" matches "कुत्र्या")
-  if (t.length >= 3 && s.length >= 3) {
+  // Prefix / Substring / Conjoined word matching (e.g. "कुत्र्याजवळ" matches "कुत्र्या")
+  if (t && t.length >= 3 && s.length >= 3) {
     if (t.startsWith(s) || s.startsWith(t)) return true;
   }
-
-  // Fuzzy tolerance for minor pronunciation variations (min 4 characters)
-  if (t.length >= 4 && s.length >= 4) {
-    let diff = 0;
-    const minLen = Math.min(t.length, s.length);
-    for (let i = 0; i < minLen; i++) {
-      if (t[i] !== s[i]) diff++;
-    }
-    diff += Math.abs(t.length - s.length);
-    if (diff <= 1) return true;
+  if (tr && tr.length >= 3 && s.length >= 3) {
+    if (tr.startsWith(s) || s.startsWith(tr)) return true;
   }
+
+  // Fuzzy edit-distance tolerance for minor pronunciation variations (min length 4)
+  const isFuzzyMatch = (str) => {
+    if (!str || str.length < 4 || s.length < 4) return false;
+    let diff = 0;
+    const minLen = Math.min(str.length, s.length);
+    for (let i = 0; i < minLen; i++) {
+      if (str[i] !== s[i]) diff++;
+    }
+    diff += Math.abs(str.length - s.length);
+    return diff <= 1;
+  };
+
+  if (isFuzzyMatch(t) || isFuzzyMatch(tr)) return true;
 
   return false;
 }
@@ -83,10 +108,10 @@ function expandSpokenTokens(rawTokens) {
   const expanded = [];
 
   for (const raw of rawTokens) {
-    const clean = normalizeWord(raw);
+    const clean = normalizeText(raw);
     if (!clean) continue;
 
-    // Check if token is a series of digits / Devanagari numerals
+    // If token is a series of digits / Devanagari numerals (e.g. "4729018356" or "४७२९०१८३५६")
     if (/^[\d०-९]+$/.test(clean) && clean.length > 1) {
       for (const char of clean) {
         expanded.push(DEVA_DIGIT_MAP[char] || char);
@@ -101,15 +126,15 @@ function expandSpokenTokens(rawTokens) {
 
 export function useSpeechRecognition({
   promptText = '',
+  romanizedText = '',
   language = 'english_indian',
+  isOpenEnded = false,
   onAllWordsRead,
   autoComplete = true,
 }) {
-  const [isSupported, setIsSupported] = useState(true);
-  const [hasNativeSTT, setHasNativeSTT] = useState(false);
+  const [isSupported, setIsSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [readWordIndex, setReadWordIndex] = useState(-1);
-  const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [recognizedTranscript, setRecognizedTranscript] = useState('');
   const [isCompleted, setIsCompleted] = useState(false);
 
@@ -119,34 +144,32 @@ export function useSpeechRecognition({
   const onAllWordsReadRef = useRef(onAllWordsRead);
   const autoCompleteRef = useRef(autoComplete);
 
-  // Audio energy & cadence tracking refs
-  const pacerIntervalRef = useRef(null);
-  const startTimeRef = useRef(0);
-  const msPerWordRef = useRef(380);
-
   useEffect(() => { onAllWordsReadRef.current = onAllWordsRead; }, [onAllWordsRead]);
   useEffect(() => { autoCompleteRef.current = autoComplete; }, [autoComplete]);
 
   const promptWords = promptText ? promptText.trim().split(/\s+/).filter(Boolean) : [];
+  const romanizedWords = romanizedText ? romanizedText.trim().split(/\s+/).filter(Boolean) : [];
   const promptWordsRef = useRef(promptWords);
+  const romanizedWordsRef = useRef(romanizedWords);
+
   useEffect(() => {
     promptWordsRef.current = promptText ? promptText.trim().split(/\s+/).filter(Boolean) : [];
-  }, [promptText]);
+    romanizedWordsRef.current = romanizedText ? romanizedText.trim().split(/\s+/).filter(Boolean) : [];
+  }, [promptText, romanizedText]);
 
   // Check browser SpeechRecognition support
   useEffect(() => {
     try {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      setHasNativeSTT(Boolean(SR));
+      setIsSupported(Boolean(SR));
     } catch (e) {
-      setHasNativeSTT(false);
+      setIsSupported(false);
     }
   }, []);
 
   // Reset state when prompt changes
   useEffect(() => {
     setReadWordIndex(-1);
-    setCurrentWordIndex(0);
     setRecognizedTranscript('');
     setIsCompleted(false);
     completedRef.current = false;
@@ -158,9 +181,6 @@ export function useSpeechRecognition({
       if (recognitionRef.current) {
         try { recognitionRef.current.abort(); } catch (e) {}
       }
-      if (pacerIntervalRef.current) {
-        clearInterval(pacerIntervalRef.current);
-      }
     };
   }, []);
 
@@ -170,7 +190,6 @@ export function useSpeechRecognition({
     setIsCompleted(true);
     const totalWords = promptWordsRef.current.length;
     setReadWordIndex(Math.max(0, totalWords - 1));
-    setCurrentWordIndex(Math.max(0, totalWords - 1));
 
     if (autoCompleteRef.current && onAllWordsReadRef.current) {
       setTimeout(() => {
@@ -181,152 +200,137 @@ export function useSpeechRecognition({
     }
   }, []);
 
-  // Public method for external components (AudioRecorder) to stream mic energy
-  const feedAudioEnergy = useCallback((energy) => {
-    // Microphone energy hook for responsive audio reactions
-  }, []);
+  const startListening = useCallback(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn('[SpeechRecognition] Web Speech API not available in this browser');
+      setIsListening(true);
+      isListeningRef.current = true;
+      return;
+    }
 
-  const startListening = useCallback((options = {}) => {
     isListeningRef.current = true;
     setIsListening(true);
     completedRef.current = false;
     setIsCompleted(false);
     setReadWordIndex(-1);
-    setCurrentWordIndex(0);
     setRecognizedTranscript('');
-    startTimeRef.current = Date.now();
 
-    const words = promptWordsRef.current;
-    const totalWords = words.length || 1;
-
-    // Calculate natural reading cadence: ~360-440ms per word
-    const calculatedMsPerWord = Math.max(320, Math.min(480, Math.round(2800 / Math.max(totalWords, 4))));
-    msPerWordRef.current = calculatedMsPerWord;
-
-    // ── 1. Start Universal Cadence Teleprompter Engine ─────────────────────
-    if (pacerIntervalRef.current) {
-      clearInterval(pacerIntervalRef.current);
-    }
-
-    pacerIntervalRef.current = setInterval(() => {
-      if (!isListeningRef.current || completedRef.current) return;
-
-      const now = Date.now();
-      const elapsedOverall = now - startTimeRef.current;
-
-      // Word progress calculation
-      const rawProgress = Math.floor(elapsedOverall / msPerWordRef.current);
-      const targetReadIdx = Math.min(rawProgress - 1, totalWords - 1);
-      const targetCurrIdx = Math.min(Math.max(0, rawProgress), totalWords - 1);
-
-      setCurrentWordIndex(targetCurrIdx);
-
-      if (targetReadIdx >= 0) {
-        setReadWordIndex((prev) => Math.max(prev, targetReadIdx));
+    try {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (e) {}
       }
 
-      // If all words have been reached
-      if (targetReadIdx >= totalWords - 1 && elapsedOverall >= 1000) {
-        triggerCompletion();
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
+
+      // Select proper language code
+      if (language === 'hindi') {
+        recognition.lang = 'hi-IN';
+      } else if (language === 'marathi') {
+        recognition.lang = 'mr-IN';
+      } else {
+        recognition.lang = 'en-IN';
       }
-    }, 50);
 
-    // ── 2. Additive Web Speech STT Boost (when available in browser) ───────
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      try {
-        if (recognitionRef.current) {
-          try { recognitionRef.current.abort(); } catch (e) {}
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 3;
+
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+
+      recognition.onresult = (event) => {
+        if (!isListeningRef.current || completedRef.current) return;
+
+        // Build continuous transcript from all active result segments
+        let fullTranscript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          fullTranscript += event.results[i][0].transcript + ' ';
         }
+        fullTranscript = fullTranscript.trim();
+        setRecognizedTranscript(fullTranscript);
 
-        const recognition = new SpeechRecognition();
-        recognitionRef.current = recognition;
+        const rawTokens = fullTranscript.split(/\s+/).filter(Boolean);
+        const spokenTokens = expandSpokenTokens(rawTokens);
+        const targetWords = promptWordsRef.current;
+        const targetRomanized = romanizedWordsRef.current;
 
-        if (language === 'hindi') {
-          recognition.lang = 'hi-IN';
-        } else if (language === 'marathi') {
-          recognition.lang = 'mr-IN';
-        } else {
-          recognition.lang = 'en-IN';
-        }
+        if (!targetWords.length || !spokenTokens.length) return;
 
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 3;
-
-        recognition.onresult = (event) => {
-          if (!isListeningRef.current || completedRef.current) return;
-
-          let fullTranscript = '';
-          for (let i = 0; i < event.results.length; i++) {
-            fullTranscript += event.results[i][0].transcript + ' ';
-          }
-          fullTranscript = fullTranscript.trim();
-          setRecognizedTranscript(fullTranscript);
-
-          const rawTokens = fullTranscript.split(/\s+/).filter(Boolean);
-          const spokenTokens = expandSpokenTokens(rawTokens);
-          const targetWords = promptWordsRef.current;
-          if (!targetWords.length || !spokenTokens.length) return;
-
-          // Progressive lookahead matching
-          let currentTargetIdx = 0;
-          for (let sIdx = 0; sIdx < spokenTokens.length && currentTargetIdx < targetWords.length; sIdx++) {
-            const spoken = spokenTokens[sIdx];
-            let matchedOffset = -1;
-            for (let offset = 0; offset <= 3 && currentTargetIdx + offset < targetWords.length; offset++) {
-              if (wordsMatch(targetWords[currentTargetIdx + offset], spoken)) {
-                matchedOffset = offset;
-                break;
-              }
-            }
-            if (matchedOffset >= 0) {
-              currentTargetIdx += matchedOffset + 1;
-            }
-          }
-
-          const matchedReadIdx = Math.min(currentTargetIdx - 1, targetWords.length - 1);
-          if (matchedReadIdx >= 0) {
-            setReadWordIndex((prev) => Math.max(prev, matchedReadIdx));
-            setCurrentWordIndex(Math.min(matchedReadIdx + 1, targetWords.length - 1));
-            // Sync teleprompter start time so it continues from the STT matched word
-            const now = Date.now();
-            startTimeRef.current = now - ((matchedReadIdx + 1) * msPerWordRef.current);
-          }
-
-          if (currentTargetIdx >= Math.ceil(targetWords.length * 0.85)) {
+        // Handle open-ended spontaneous speech prompts
+        if (isOpenEnded) {
+          const spokenCount = spokenTokens.length;
+          const targetCount = targetWords.length;
+          const simulatedProgress = Math.min(Math.floor((spokenCount / 8) * targetCount), targetCount - 1);
+          setReadWordIndex((prev) => Math.max(prev, simulatedProgress));
+          if (spokenCount >= 10) {
             triggerCompletion();
           }
-        };
+          return;
+        }
 
-        recognition.onerror = (e) => {
-          // Non-fatal error notice; acoustic pacer continues smoothly
-          console.debug('[SpeechRecognition] notice:', e.error);
-        };
+        // Progressive word matching with lookahead window
+        let currentTargetIdx = 0;
 
-        recognition.onend = () => {
-          if (isListeningRef.current && !completedRef.current) {
-            try {
-              recognition.start();
-            } catch (e) {}
+        for (let sIdx = 0; sIdx < spokenTokens.length && currentTargetIdx < targetWords.length; sIdx++) {
+          const spoken = spokenTokens[sIdx];
+
+          // Check direct match or lookahead up to 3 words
+          let matchedOffset = -1;
+          for (let offset = 0; offset <= 3 && currentTargetIdx + offset < targetWords.length; offset++) {
+            const targetWord = targetWords[currentTargetIdx + offset];
+            const targetRom = targetRomanized[currentTargetIdx + offset] || '';
+            if (wordsMatch(targetWord, targetRom, spoken)) {
+              matchedOffset = offset;
+              break;
+            }
           }
-        };
 
-        recognition.start();
-      } catch (err) {
-        console.debug('[SpeechRecognition] Running with universal teleprompter engine:', err);
-      }
+          if (matchedOffset >= 0) {
+            currentTargetIdx += matchedOffset + 1;
+          }
+        }
+
+        // STRICT UPDATE: Only update readWordIndex when actual spoken tokens match
+        const newReadIdx = Math.min(currentTargetIdx - 1, targetWords.length - 1);
+        if (newReadIdx >= 0) {
+          setReadWordIndex((prev) => Math.max(prev, newReadIdx));
+        }
+
+        // Complete when all words (or >= 85% for long sentences) are read
+        if (currentTargetIdx >= Math.ceil(targetWords.length * 0.85)) {
+          triggerCompletion();
+        }
+      };
+
+      recognition.onerror = (e) => {
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          console.debug('[SpeechRecognition] notice:', e.error);
+        }
+      };
+
+      recognition.onend = () => {
+        // Auto-restart if user is still actively recording and hasn't finished
+        if (isListeningRef.current && !completedRef.current) {
+          try {
+            recognition.start();
+          } catch (e) {}
+        } else {
+          setIsListening(false);
+        }
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.warn('[SpeechRecognition] Could not start:', err);
     }
-  }, [language, triggerCompletion]);
+  }, [language, isOpenEnded, triggerCompletion]);
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false;
     setIsListening(false);
-
-    if (pacerIntervalRef.current) {
-      clearInterval(pacerIntervalRef.current);
-      pacerIntervalRef.current = null;
-    }
 
     if (recognitionRef.current) {
       try {
@@ -339,7 +343,6 @@ export function useSpeechRecognition({
   const reset = useCallback(() => {
     stopListening();
     setReadWordIndex(-1);
-    setCurrentWordIndex(0);
     setRecognizedTranscript('');
     setIsCompleted(false);
     completedRef.current = false;
@@ -347,13 +350,10 @@ export function useSpeechRecognition({
 
   return {
     isSupported,
-    hasNativeSTT,
     isListening,
     readWordIndex,
-    currentWordIndex,
     recognizedTranscript,
     isCompleted,
-    feedAudioEnergy,
     startListening,
     stopListening,
     reset,
