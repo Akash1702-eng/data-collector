@@ -78,7 +78,14 @@ if FRONTEND_DIST.exists():
         target = FRONTEND_DIST / full_path
         if full_path and target.is_file():
             return FileResponse(str(target))
-        return FileResponse(str(FRONTEND_DIST / "index.html"))
+        return FileResponse(
+            str(FRONTEND_DIST / "index.html"),
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
 # ── Launch ───────────────────────────────────────────────────────────────────
 if __name__ == "__main__":

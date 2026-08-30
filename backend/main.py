@@ -57,7 +57,14 @@ if FRONTEND_DIST.exists():
         # Default fallback to React SPA index.html
         index_file = FRONTEND_DIST / "index.html"
         if index_file.exists():
-            return FileResponse(str(index_file))
+            return FileResponse(
+                str(index_file),
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
 
         return {"error": "Frontend build index.html not found"}
 else:
