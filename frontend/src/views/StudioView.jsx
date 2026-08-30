@@ -65,6 +65,7 @@ export default function StudioView({
     readWordIndex,
     recognizedTranscript,
     isCompleted,
+    feedAudioEnergy,
     startListening,
     stopListening,
     reset: resetSpeech,
@@ -360,6 +361,7 @@ export default function StudioView({
         minSeconds={1.0}
         maxSeconds={15.0}
         stopTrigger={stopTrigger}
+        onAudioEnergy={feedAudioEnergy}
         onStart={() => {
           resetSpeech();
           startListening();
