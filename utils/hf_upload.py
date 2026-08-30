@@ -18,6 +18,7 @@ import traceback
 from pathlib import Path
 from collections import defaultdict
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 from datasets import Dataset, Audio
 from huggingface_hub import HfApi, hf_hub_download, login
@@ -116,13 +117,40 @@ def _build_dataset(clips: list[dict]) -> Dataset:
     return ds
 
 
+def _deduplicate_table(table: pa.Table, key_columns: list[str]) -> pa.Table:
+    """
+    Deduplicate a PyArrow table based on specified key columns while preserving
+    PyArrow column types and Hugging Face schema metadata (e.g. Audio features).
+    """
+    if len(table) == 0:
+        return table
+
+    cols_data = [table.column(col).to_pylist() for col in key_columns if col in table.column_names]
+    if len(cols_data) != len(key_columns):
+        return table
+
+    seen = set()
+    keep_indices = []
+    for i in range(len(table)):
+        key = tuple(cols_data[c_idx][i] for c_idx in range(len(key_columns)))
+        if key not in seen:
+            seen.add(key)
+            keep_indices.append(i)
+
+    if len(keep_indices) == len(table):
+        return table
+
+    return table.take(pa.array(keep_indices, type=pa.int64()))
+
+
 def upload_session(clips: list[dict], max_retries: int = 2) -> tuple[bool, str]:
     """
     Upload a contributor's full recording session to HF Hub.
     Guards against duplicate submissions within the last 5 minutes.
 
-    Memory-optimized: uploads only the NEW clips as a shard file directly
-    to the HF repo, avoiding download-concat-reupload of the full dataset.
+    Appends directly to the canonical dataset split file:
+      data/{split_name}-00000-of-00001.parquet
+    using memory-efficient PyArrow concatenation (zero audio decoding).
 
     Args:
         clips: list of clip dicts (see _build_dataset for schema)
@@ -152,29 +180,57 @@ def upload_session(clips: list[dict], max_retries: int = 2) -> tuple[bool, str]:
 
     ds = _build_dataset(clips)
     split_name = "human" if source == "human" else "synthetic"
+    canonical_filename = f"data/{split_name}-00000-of-00001.parquet"
 
     for attempt in range(max_retries + 1):
         try:
-            # Memory-optimized: upload ONLY the new data shard
-            # HF Hub will manage multiple parquet files per split
             api = HfApi(token=HF_TOKEN)
 
-            # Save new clips to a temp parquet file
-            timestamp_tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            short_id = contribution_id[:8] if contribution_id else "batch"
-            shard_filename = f"{split_name}/shard_{short_id}_{timestamp_tag}.parquet"
-
             with tempfile.TemporaryDirectory() as tmp_dir:
-                local_parquet = Path(tmp_dir) / "shard.parquet"
-                ds.to_parquet(str(local_parquet))
+                # 1. Convert new clips dataset to PyArrow table
+                new_local_parquet = Path(tmp_dir) / "new_shard.parquet"
+                ds.to_parquet(str(new_local_parquet))
+                new_table = pq.read_table(str(new_local_parquet))
+
+                # 2. Download and load existing canonical parquet table if present
+                try:
+                    local_existing = hf_hub_download(
+                        repo_id=HF_DATASET_REPO,
+                        filename=canonical_filename,
+                        repo_type="dataset",
+                        token=HF_TOKEN,
+                    )
+                    existing_table = pq.read_table(local_existing)
+                    hf_metadata = existing_table.schema.metadata or new_table.schema.metadata
+                    combined_table = pa.concat_tables([existing_table, new_table])
+                    if hf_metadata:
+                        combined_table = combined_table.replace_schema_metadata(hf_metadata)
+                    del existing_table
+                except Exception as load_err:
+                    logger.info(f"Could not load existing dataset '{canonical_filename}' ({load_err}). Creating new split.")
+                    combined_table = new_table
+
+                # 3. Deduplicate
+                key_columns = ["contribution_id", "prompt_id"]
+                if split_name == "synthetic":
+                    key_columns.append("tts_engine")
+                combined_table = _deduplicate_table(combined_table, key_columns)
+
+                # 4. Save combined table and upload directly to canonical split file
+                out_parquet = Path(tmp_dir) / f"{split_name}-00000-of-00001.parquet"
+                pq.write_table(combined_table, str(out_parquet))
 
                 api.upload_file(
-                    path_or_fileobj=str(local_parquet),
-                    path_in_repo=f"data/{shard_filename}",
+                    path_or_fileobj=str(out_parquet),
+                    path_in_repo=canonical_filename,
                     repo_id=HF_DATASET_REPO,
                     repo_type="dataset",
                     token=HF_TOKEN,
+                    commit_message=f"Append {len(clips)} clips to {split_name} dataset ({len(combined_table)} total rows)",
                 )
+
+                del combined_table
+                del new_table
 
             # Record in recent submission cache on success
             if source == "human" and contribution_id:
@@ -236,18 +292,23 @@ _CONTRIB_COUNT_CACHE = {"count": 0, "timestamp": 0.0}
 
 def _find_split_parquet_files(split_name: str) -> list[str]:
     """
-    Find all parquet files for a given split in the HF repo.
-    Handles both old single-file layout and new shard layout.
+    Find parquet file(s) for a given split in the HF repo.
+    Prioritizes the canonical data/{split_name}-00000-of-00001.parquet file.
     """
+    canonical = f"data/{split_name}-00000-of-00001.parquet"
     try:
         api = HfApi(token=HF_TOKEN)
         repo_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset")
+        if canonical in repo_files:
+            return [canonical]
         matches = [
             f for f in repo_files
             if f.endswith(".parquet") and split_name in f
         ]
-        return matches
+        return matches if matches else [canonical]
     except Exception as e:
+        logger.debug(f"Could not list repo files for split '{split_name}': {e}")
+        return [canonical]
         logger.debug(f"Could not list repo files for split '{split_name}': {e}")
         return []
 

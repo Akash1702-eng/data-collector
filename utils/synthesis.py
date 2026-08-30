@@ -78,7 +78,11 @@ def check_existing_synthetic(contribution_id: str, engine_name: str) -> bool:
 
         api = HfApi(token=HF_TOKEN)
         repo_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset")
-        synth_parquets = [f for f in repo_files if f.endswith(".parquet") and "synthetic" in f]
+        canonical = "data/synthetic-00000-of-00001.parquet"
+        if canonical in repo_files:
+            synth_parquets = [canonical]
+        else:
+            synth_parquets = [f for f in repo_files if f.endswith(".parquet") and "synthetic" in f]
 
         if not synth_parquets:
             return False

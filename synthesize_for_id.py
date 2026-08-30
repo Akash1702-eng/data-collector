@@ -63,20 +63,26 @@ logger = logging.getLogger("synthesize_for_id")
 
 
 def _get_dataset_parquet_files() -> dict[str, list[str]]:
-    """Find parquet filenames for 'human' and 'synthetic' splits in repo.
-    Returns lists to handle the shard-based upload layout."""
+    """Find parquet filenames for 'human' and 'synthetic' splits in repo."""
     _ensure_login()
     api = HfApi(token=HF_TOKEN)
     repo_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset")
 
     human_files = []
     synthetic_files = []
-    for f in repo_files:
-        if f.endswith(".parquet"):
-            if "human" in f:
-                human_files.append(f)
-            elif "synthetic" in f:
-                synthetic_files.append(f)
+
+    if "data/human-00000-of-00001.parquet" in repo_files:
+        human_files.append("data/human-00000-of-00001.parquet")
+    if "data/synthetic-00000-of-00001.parquet" in repo_files:
+        synthetic_files.append("data/synthetic-00000-of-00001.parquet")
+
+    if not human_files or not synthetic_files:
+        for f in repo_files:
+            if f.endswith(".parquet"):
+                if "human" in f and f not in human_files:
+                    human_files.append(f)
+                elif "synthetic" in f and f not in synthetic_files:
+                    synthetic_files.append(f)
 
     return {"human": human_files, "synthetic": synthetic_files}
 
