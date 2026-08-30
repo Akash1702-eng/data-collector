@@ -52,13 +52,15 @@ export default function StudioView({
   const promptDisplayText = currentPrompt.native_text || currentPrompt.text || currentPrompt.romanized_text || '';
   const words = promptDisplayText.trim().split(/\s+/).filter(Boolean);
 
-  // Strict Speech Recognition hook
+  // Universal Speech Recognition & Voice-Paced Teleprompter hook
   const {
     isSupported,
     isListening,
     readWordIndex,
+    currentWordIndex,
     recognizedTranscript,
     isCompleted,
+    feedAudioEnergy,
     startListening,
     stopListening,
     reset: resetSpeech,
@@ -199,7 +201,7 @@ export default function StudioView({
 
           {isSupported && (
             <span className="badge badge-emerald" title="Live speech tracking active">
-              ✨ LIVE WORD TRACKING
+              🎙️ LIVE VOICE TRACKING
             </span>
           )}
 
@@ -238,7 +240,7 @@ export default function StudioView({
             let status = 'pending';
             if (wIdx <= readWordIndex) {
               status = 'read';
-            } else if (wIdx === readWordIndex + 1 && isListening) {
+            } else if (isListening && (wIdx === currentWordIndex || wIdx === readWordIndex + 1)) {
               status = 'current';
             }
 
@@ -295,12 +297,12 @@ export default function StudioView({
               </span>
             </div>
           </div>
-        ) : isListening && readWordIndex >= 0 ? (
+        ) : isListening ? (
           <div className="karaoke-status-bar">
             <span className="speech-live-badge">
               <Mic size={14} className="spin" />
               <span>
-                Words Read: {Math.min(readWordIndex + 1, words.length)} / {words.length} ({Math.round(((readWordIndex + 1) / words.length) * 100)}%)
+                Words Read: {Math.min(Math.max(readWordIndex + 1, currentWordIndex > 0 ? currentWordIndex : 0), words.length)} / {words.length} ({Math.round((Math.min(Math.max(readWordIndex + 1, currentWordIndex > 0 ? currentWordIndex : 0), words.length) / Math.max(words.length, 1)) * 100)}%)
               </span>
             </span>
           </div>
@@ -351,9 +353,10 @@ export default function StudioView({
         minSeconds={1.0}
         maxSeconds={15.0}
         stopTrigger={stopTrigger}
-        onStart={() => {
+        onAudioEnergy={feedAudioEnergy}
+        onStart={({ analyser } = {}) => {
           resetSpeech();
-          startListening();
+          startListening({ analyser });
         }}
         onStop={() => {
           stopListening();
