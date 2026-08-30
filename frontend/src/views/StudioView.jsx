@@ -58,14 +58,13 @@ export default function StudioView({
     currentPrompt.type === 'open_ended' ||
     currentPrompt.id?.includes('_open_');
 
-  // Strict Speech Recognition hook
+  // Strict Speech Recognition hook — words only turn green when actually spoken
   const {
     isSupported,
     isListening,
     readWordIndex,
     recognizedTranscript,
     isCompleted,
-    feedAudioEnergy,
     startListening,
     stopListening,
     reset: resetSpeech,
@@ -73,7 +72,6 @@ export default function StudioView({
     promptText: promptDisplayText,
     romanizedText: currentPrompt.romanized_text || '',
     language: currentPrompt.language,
-    isOpenEnded: isAiPrompt || currentPrompt.type === 'open_ended',
     autoComplete: autoAdvance,
     onAllWordsRead: () => {
       // Trigger recording stop
@@ -361,7 +359,6 @@ export default function StudioView({
         minSeconds={1.0}
         maxSeconds={15.0}
         stopTrigger={stopTrigger}
-        onAudioEnergy={feedAudioEnergy}
         onStart={() => {
           resetSpeech();
           startListening();
