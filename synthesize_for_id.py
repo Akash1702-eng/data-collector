@@ -62,28 +62,29 @@ logging.basicConfig(
 logger = logging.getLogger("synthesize_for_id")
 
 
-def _get_dataset_parquet_files() -> dict[str, str | None]:
-    """Find parquet filenames for 'human' and 'synthetic' splits in repo."""
+def _get_dataset_parquet_files() -> dict[str, list[str]]:
+    """Find parquet filenames for 'human' and 'synthetic' splits in repo.
+    Returns lists to handle the shard-based upload layout."""
     _ensure_login()
     api = HfApi(token=HF_TOKEN)
     repo_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset")
 
-    human_file = None
-    synthetic_file = None
+    human_files = []
+    synthetic_files = []
     for f in repo_files:
         if f.endswith(".parquet"):
             if "human" in f:
-                human_file = f
+                human_files.append(f)
             elif "synthetic" in f:
-                synthetic_file = f
+                synthetic_files.append(f)
 
-    return {"human": human_file, "synthetic": synthetic_file}
+    return {"human": human_files, "synthetic": synthetic_files}
 
 
 def fetch_human_records_for_id(contribution_id: str) -> list[dict]:
     """
     Fetch prompt metadata for a given contribution_id from the 'human' split.
-    Downloads the human parquet file once and filters columns for speed.
+    Downloads the human parquet file(s) and filters columns for speed.
     """
     print(f"\n🔍 Searching for contribution ID in Dataset 1 (human split)...")
     print(f"   Target ID  : {contribution_id}")
@@ -93,30 +94,33 @@ def fetch_human_records_for_id(contribution_id: str) -> list[dict]:
 
     try:
         files = _get_dataset_parquet_files()
-        human_rel_path = files.get("human")
-        if not human_rel_path:
-            raise FileNotFoundError("Could not find human parquet file in repo.")
+        human_parquet_files = files.get("human", [])
+        if not human_parquet_files:
+            raise FileNotFoundError("Could not find human parquet file(s) in repo.")
 
-        print(f"   Downloading metadata from: {human_rel_path}...")
-        local_parquet = hf_hub_download(
-            repo_id=HF_DATASET_REPO,
-            filename=human_rel_path,
-            repo_type="dataset",
-            token=HF_TOKEN,
-        )
-
-        table = pq.read_table(local_parquet)
-        cols = [c for c in [
+        all_records = []
+        cols = [
             "contribution_id", "source", "language", "prompt_id",
             "prompt_text_romanized", "age_range", "gender", "region",
             "environment", "duration_seconds", "submitted_at"
-        ] if c in table.column_names]
+        ]
 
-        df = table.select(cols).to_pandas()
-        matching_df = df[df["contribution_id"] == contribution_id]
+        for human_rel_path in human_parquet_files:
+            print(f"   Downloading metadata from: {human_rel_path}...")
+            local_parquet = hf_hub_download(
+                repo_id=HF_DATASET_REPO,
+                filename=human_rel_path,
+                repo_type="dataset",
+                token=HF_TOKEN,
+            )
 
-        records = matching_df.to_dict(orient="records")
-        return records
+            table = pq.read_table(local_parquet)
+            available_cols = [c for c in cols if c in table.column_names]
+            df = table.select(available_cols).to_pandas()
+            matching_df = df[df["contribution_id"] == contribution_id]
+            all_records.extend(matching_df.to_dict(orient="records"))
+
+        return all_records
 
     except Exception as e:
         logger.error(f"Failed to fetch human records: {e}")
@@ -134,21 +138,21 @@ def find_all_missing_contribution_ids() -> list[str]:
     human_cids = set()
     synth_cids = set()
 
-    if files.get("human"):
+    for hp_file in files.get("human", []):
         try:
-            hp = hf_hub_download(repo_id=HF_DATASET_REPO, filename=files["human"], repo_type="dataset", token=HF_TOKEN)
+            hp = hf_hub_download(repo_id=HF_DATASET_REPO, filename=hp_file, repo_type="dataset", token=HF_TOKEN)
             htable = pq.read_table(hp, columns=["contribution_id"])
-            human_cids = set(str(x) for x in htable.column("contribution_id").to_pylist() if x)
+            human_cids.update(str(x) for x in htable.column("contribution_id").to_pylist() if x)
         except Exception as e:
-            print(f"⚠️ Could not read human split: {e}")
+            print(f"⚠️ Could not read human split file {hp_file}: {e}")
 
-    if files.get("synthetic"):
+    for sp_file in files.get("synthetic", []):
         try:
-            sp = hf_hub_download(repo_id=HF_DATASET_REPO, filename=files["synthetic"], repo_type="dataset", token=HF_TOKEN)
+            sp = hf_hub_download(repo_id=HF_DATASET_REPO, filename=sp_file, repo_type="dataset", token=HF_TOKEN)
             stable = pq.read_table(sp, columns=["contribution_id"])
-            synth_cids = set(str(x) for x in stable.column("contribution_id").to_pylist() if x)
+            synth_cids.update(str(x) for x in stable.column("contribution_id").to_pylist() if x)
         except Exception as e:
-            print(f"ℹ️ Synthetic split might be empty: {e}")
+            print(f"ℹ️ Synthetic split file might be empty ({sp_file}): {e}")
 
     missing = sorted(list(human_cids - synth_cids))
     return missing
@@ -163,22 +167,26 @@ def check_existing_synthetic_for_id(contribution_id: str) -> dict[str, int]:
 
     try:
         files = _get_dataset_parquet_files()
-        synthetic_rel_path = files.get("synthetic")
-        if not synthetic_rel_path:
+        synthetic_files = files.get("synthetic", [])
+        if not synthetic_files:
             return {}
 
-        sp = hf_hub_download(
-            repo_id=HF_DATASET_REPO,
-            filename=synthetic_rel_path,
-            repo_type="dataset",
-            token=HF_TOKEN,
-        )
-        table = pq.read_table(sp, columns=["contribution_id", "tts_engine"])
-        df = table.to_pandas()
-        matching = df[df["contribution_id"] == contribution_id]
-        for _, row in matching.iterrows():
-            eng = row.get("tts_engine") or "unknown"
-            existing_by_engine[eng] += 1
+        for sp_file in synthetic_files:
+            try:
+                sp = hf_hub_download(
+                    repo_id=HF_DATASET_REPO,
+                    filename=sp_file,
+                    repo_type="dataset",
+                    token=HF_TOKEN,
+                )
+                table = pq.read_table(sp, columns=["contribution_id", "tts_engine"])
+                df = table.to_pandas()
+                matching = df[df["contribution_id"] == contribution_id]
+                for _, row in matching.iterrows():
+                    eng = row.get("tts_engine") or "unknown"
+                    existing_by_engine[eng] += 1
+            except Exception as e:
+                logger.debug(f"Synthetic check note for {sp_file}: {e}")
 
     except Exception as e:
         logger.debug(f"Synthetic check note: {e}")

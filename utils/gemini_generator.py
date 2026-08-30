@@ -314,38 +314,8 @@ Return ONLY a JSON object with keys "native_text", "romanized_text", "topic".
             logger.debug(f"Gemini REST model {model_name} error: {e}")
             continue
 
-    # 2. Fallback to google.generativeai if installed
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_API_KEY)
-        for model_name in unique_models:
-            try:
-                model = genai.GenerativeModel(model_name)
-                res = model.generate_content(
-                    prompt_instruction,
-                    generation_config={"temperature": 0.85, "top_p": 0.95}
-                )
-                text = res.text.strip()
-                if text.startswith("```"):
-                    lines = text.split("\n")
-                    if lines[0].startswith("```"):
-                        lines = lines[1:]
-                    if lines and lines[-1].startswith("```"):
-                        lines = lines[:-1]
-                    text = "\n".join(lines).strip()
-                data = json.loads(text)
-                if data.get("native_text") and data.get("romanized_text"):
-                    return {
-                        "native_text": data["native_text"].strip(),
-                        "romanized_text": data["romanized_text"].strip(),
-                        "topic": data.get("topic", topic),
-                    }
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    logger.info("Using curated multilingual fallback prompt pool for this session.")
+    # All REST API models exhausted — return None to trigger curated fallback pool
+    logger.info("Gemini REST API did not return a valid prompt. Using curated fallback pool.")
     return None
 
 

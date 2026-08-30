@@ -9,8 +9,10 @@ Central module that handles:
   - Per-prompt error handling with summary logging
 """
 
+import gc
 import time
 import random
+import shutil
 import datetime
 import tempfile
 import logging
@@ -65,30 +67,40 @@ def _is_synth_already_running_or_done(contribution_id: str, engine_name: str) ->
 
 def check_existing_synthetic(contribution_id: str, engine_name: str) -> bool:
     """
-    Query the HF synthetic split (streaming) to check if rows already
+    Query the HF synthetic split to check if rows already
     exist for this contribution_id + engine_name combination.
+    Memory-optimized: reads only needed columns via pyarrow.
     Returns True if synthetic data already exists (should skip).
     """
     try:
-        from datasets import load_dataset, Audio
+        import pyarrow.parquet as pq
+        from huggingface_hub import HfApi, hf_hub_download
 
-        ds = load_dataset(
-            HF_DATASET_REPO,
-            split="synthetic",
-            token=HF_TOKEN,
-            streaming=True,
-        )
-        try:
-            ds = ds.cast_column("audio", Audio(decode=False))
-        except Exception:
-            pass
+        api = HfApi(token=HF_TOKEN)
+        repo_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset")
+        synth_parquets = [f for f in repo_files if f.endswith(".parquet") and "synthetic" in f]
 
-        for row in ds:
-            if (
-                row.get("contribution_id") == contribution_id
-                and row.get("tts_engine") == engine_name
-            ):
-                return True
+        if not synth_parquets:
+            return False
+
+        for pf in synth_parquets:
+            try:
+                local_p = hf_hub_download(
+                    repo_id=HF_DATASET_REPO,
+                    filename=pf,
+                    repo_type="dataset",
+                    token=HF_TOKEN,
+                )
+                table = pq.read_table(local_p, columns=["contribution_id", "tts_engine"])
+                df = table.to_pandas()
+                match = df[
+                    (df["contribution_id"] == contribution_id) &
+                    (df["tts_engine"] == engine_name)
+                ]
+                if len(match) > 0:
+                    return True
+            except Exception:
+                continue
 
         return False
 
@@ -318,7 +330,16 @@ def generate_synthetic_session(
             logger.error(f"  [{engine_name}] Upload failed: {message}")
             summary["errors"].append(f"Upload failed: {message}")
 
-    # 7. Log summary
+    # 7. Cleanup temp files and free memory
+    try:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    except Exception:
+        pass
+    del synthetic_clips
+    gc.collect()
+
+    # 8. Log summary
     logger.info(
         f"Contribution {contribution_id}/{engine_name}: "
         f"{summary['generated']} generated, "

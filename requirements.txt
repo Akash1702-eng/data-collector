@@ -11,7 +11,7 @@ huggingface_hub>=0.25.0,<1.0.0   # gradio 4.x needs HfFolder which was removed i
 datasets[audio]>=3.0.0
 
 # ── TTS Engines ─────────────────────────────────────────────────────────
-coqui-tts>=0.24.0                 # Coqui TTS (XTTS v2 + VITS multi-speaker)
+# coqui-tts>=0.24.0               # Disabled: pulls PyTorch (~300MB+), not used in production (only edge_tts is active)
 edge-tts>=6.1.0                   # Microsoft Edge neural TTS (cloud, no API key)
 gTTS>=2.5.0                       # Google Text-to-Speech (lightweight cloud TTS)
 # bark: optional, install separately:
@@ -26,7 +26,7 @@ numpy>=1.26.0
 python-dotenv>=1.0.0
 
 # ── Google Gemini AI ───────────────────────────────────────────────────
-google-generativeai>=0.8.0
+# google-generativeai>=0.8.0      # Removed: using direct REST API instead (saves ~50MB, avoids deprecation warnings)
 
 # NOTE: torch is pre-installed by HF Spaces — only uncomment for local/Render/Cloud Run:
 # torch>=2.0.0
