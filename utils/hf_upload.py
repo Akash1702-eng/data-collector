@@ -146,15 +146,27 @@ def upload_session(clips: list[dict], max_retries: int = 2) -> tuple[bool, str]:
 
     for attempt in range(max_retries + 1):
         try:
-            # Try to load existing split to append
+            # Try to load existing split parquet directly via pyarrow (fast, zero torchcodec decode)
             try:
-                existing_ds = load_dataset(
-                    HF_DATASET_REPO,
-                    split=split_name,
-                    token=HF_TOKEN,
-                )
-                combined_ds = concatenate_datasets([existing_ds, ds])
-            except Exception:
+                from huggingface_hub import hf_hub_download
+                import pyarrow.parquet as pq
+                api = HfApi(token=HF_TOKEN)
+                repo_files = api.list_repo_files(repo_id=HF_DATASET_REPO, repo_type="dataset")
+                parquet_matches = [f for f in repo_files if f.endswith(".parquet") and split_name in f]
+                if parquet_matches:
+                    local_p = hf_hub_download(
+                        repo_id=HF_DATASET_REPO,
+                        filename=parquet_matches[0],
+                        repo_type="dataset",
+                        token=HF_TOKEN,
+                    )
+                    existing_table = pq.read_table(local_p)
+                    existing_ds = Dataset(existing_table)
+                    combined_ds = concatenate_datasets([existing_ds, ds])
+                else:
+                    combined_ds = ds
+            except Exception as load_err:
+                logger.warning(f"Could not load existing split '{split_name}': {load_err}")
                 combined_ds = ds
 
             combined_ds.push_to_hub(

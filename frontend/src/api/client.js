@@ -28,17 +28,33 @@ export async function submitContributionSession(metadata, recordingsMap) {
     formData.append(`file_${promptId}`, audioBlob, `${promptId}.webm`);
   }
 
-  const res = await fetch(`${API_BASE}/contributions/submit`, {
-    method: 'POST',
-    body: formData,
-  });
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/contributions/submit`, {
+      method: 'POST',
+      body: formData,
+    });
+  } catch (networkErr) {
+    throw new Error('Network error: Could not reach the server. Please check your connection and try again.');
+  }
 
-  const data = await res.json();
+  let data;
+  const rawText = await res.text();
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch (parseErr) {
+    if (!res.ok) {
+      throw new Error(`Server returned HTTP ${res.status} (${res.statusText || 'Upload Error'})`);
+    }
+    throw new Error('Server returned an unreadable response format.');
+  }
+
   if (!res.ok) {
-    throw new Error(data.detail || `Upload failed with status ${res.status}`);
+    throw new Error(data.detail || data.message || `Upload failed with status ${res.status}`);
   }
   return data;
 }
+
 
 export async function generatePrompt(language, promptId, topic) {
   const res = await fetch(`${API_BASE}/config/generate-prompt`, {

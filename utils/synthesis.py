@@ -34,7 +34,7 @@ from utils.hf_upload import upload_synthetic_batch
 logger = logging.getLogger(__name__)
 
 # ── TTS engines to run for each contribution ────────────────────────────────
-SYNTHESIS_ENGINES = ["edge_tts", "gtts"]
+SYNTHESIS_ENGINES = ["edge_tts"]
 
 # ── In-flight & recency lock (5-minute TTL per contribution+engine) ──────────
 _SYNTH_LOCK = threading.Lock()
