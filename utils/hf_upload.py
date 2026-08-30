@@ -108,7 +108,19 @@ def _build_dataset(clips: list[dict]) -> Dataset:
         data["environment"].append(clip.get("environment", ""))
         data["tts_engine"].append(clip.get("tts_engine", ""))
         data["voice_id"].append(clip.get("voice_id", ""))
-        data["audio"].append(clip["audio_path"])
+
+        # Read the raw WAV binary bytes and embed them directly so bytes is never None
+        audio_path_str = clip.get("audio_path", "")
+        if audio_path_str and Path(audio_path_str).exists():
+            wav_bytes = Path(audio_path_str).read_bytes()
+            data["audio"].append({"bytes": wav_bytes, "path": Path(audio_path_str).name})
+        elif "audio_bytes" in clip and clip["audio_bytes"]:
+            data["audio"].append({"bytes": clip["audio_bytes"], "path": f"{clip.get('prompt_id', 'audio')}.wav"})
+        elif isinstance(clip.get("audio"), dict) and clip["audio"].get("bytes"):
+            data["audio"].append(clip["audio"])
+        else:
+            data["audio"].append({"bytes": b"", "path": ""})
+
         data["duration_seconds"].append(clip["duration_seconds"])
         data["submitted_at"].append(clip["submitted_at"])
 
