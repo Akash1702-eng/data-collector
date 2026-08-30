@@ -1,22 +1,92 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, RotateCcw, Check, AlertCircle } from 'lucide-react';
+import { Mic, Square, RotateCcw, Check, AlertTriangle, AlertCircle, Sparkles, Activity } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
+
+/**
+ * Validates whether the audio contains genuine human speech with frequency/pitch dynamics
+ * rather than flat silence, constant monotone noise, or background hum.
+ */
+function validateVoiceFrequencyDynamics(snapshots, durationSeconds, minSeconds) {
+  if (durationSeconds < minSeconds) {
+    return {
+      isValid: false,
+      reason: 'too_short',
+      message: `Recording too short (${durationSeconds.toFixed(1)}s). Please read the prompt completely within 10 to 15 seconds.`,
+    };
+  }
+
+  // Extract voiced frames where frequency energy in speech band (bins 1-45) is above noise floor
+  const voicedFrames = snapshots.filter((s) => s.energy >= 13);
+
+  // Must have at least ~0.8s of active speech (16 snapshots at 50ms interval)
+  if (voicedFrames.length < 16) {
+    return {
+      isValid: false,
+      reason: 'no_speech',
+      message: 'No clear voice detected. Please read the prompt aloud clearly into your microphone and re-record.',
+    };
+  }
+
+  // Extract spectral centroids and dominant peak bins
+  const centroids = voicedFrames.map((f) => f.centroid);
+  const peakBins = voicedFrames.map((f) => f.peakBin);
+
+  // Calculate mean and standard deviation of spectral centroids
+  const meanCentroid = centroids.reduce((sum, val) => sum + val, 0) / centroids.length;
+  const variance =
+    centroids.reduce((sum, val) => sum + Math.pow(val - meanCentroid, 2), 0) / centroids.length;
+  const stdDevCentroid = Math.sqrt(variance);
+
+  // Count distinct dominant peak frequency bins
+  const uniquePeakBins = new Set(peakBins).size;
+
+  // Count frequency shifts (pitch transitions over time)
+  let pitchTransitions = 0;
+  for (let i = 1; i < peakBins.length; i++) {
+    if (Math.abs(peakBins[i] - peakBins[i - 1]) >= 1) {
+      pitchTransitions++;
+    }
+  }
+
+  // Genuine human voice has dynamic formant/pitch movement (stdDev >= 2.0 and distinct frequency shifts)
+  const hasFrequencyVariation =
+    stdDevCentroid >= 2.0 && (uniquePeakBins >= 3 || pitchTransitions >= 3);
+
+  if (!hasFrequencyVariation) {
+    return {
+      isValid: false,
+      reason: 'monotone_or_noise',
+      message:
+        'Voice pitch & frequency changes not detected (monotone or background noise). Please speak the prompt aloud with natural voice intonation and re-record.',
+    };
+  }
+
+  return {
+    isValid: true,
+    message: 'Voice frequency & pitch variation verified!',
+    stats: {
+      stdDevCentroid: stdDevCentroid.toFixed(2),
+      uniquePeaks: uniquePeakBins,
+      transitions: pitchTransitions,
+      speechDuration: (voicedFrames.length * 0.05).toFixed(1),
+    },
+  };
+}
 
 export default function AudioRecorder({
   promptId,
   existingRecording,
   minSeconds = 1.0,
   maxSeconds = 15.0,
-  stopTrigger = false,
   onStart,
   onStop,
   onRecordingComplete,
   onRedo,
-  onAudioEnergy,
 }) {
   const [isRecording, setIsRecording] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [validationSuccess, setValidationSuccess] = useState(null);
   const [recordedBlob, setRecordedBlob] = useState(existingRecording?.blob || null);
   const [previewUrl, setPreviewUrl] = useState(existingRecording?.url || null);
   const [analyserNode, setAnalyserNode] = useState(null);
@@ -28,30 +98,24 @@ export default function AudioRecorder({
   const chunksRef = useRef([]);
   const timerIntervalRef = useRef(null);
   const startTimeRef = useRef(0);
-  const energyIntervalRef = useRef(null);
-
-  // External stop trigger (e.g. speech recognition detected all words read)
-  useEffect(() => {
-    if (stopTrigger && isRecording) {
-      const elapsed = (Date.now() - startTimeRef.current) / 1000;
-      if (elapsed >= minSeconds) {
-        stopRecording();
-      }
-    }
-  }, [stopTrigger, isRecording, minSeconds]);
+  const sampleIntervalRef = useRef(null);
+  const frequencySnapshotsRef = useRef([]);
 
   // Sync with existing recording if prompt changes
   useEffect(() => {
     if (existingRecording) {
       setRecordedBlob(existingRecording.blob);
       setPreviewUrl(existingRecording.url);
+      setValidationSuccess(true);
     } else {
       setRecordedBlob(null);
       setPreviewUrl(null);
+      setValidationSuccess(null);
     }
     setErrorMessage(null);
     setIsRecording(false);
     setElapsedSeconds(0);
+    frequencySnapshotsRef.current = [];
   }, [promptId, existingRecording]);
 
   // Clean up on unmount
@@ -59,14 +123,14 @@ export default function AudioRecorder({
     return () => {
       cleanupAudioStream();
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      if (energyIntervalRef.current) clearInterval(energyIntervalRef.current);
+      if (sampleIntervalRef.current) clearInterval(sampleIntervalRef.current);
     };
   }, []);
 
   const cleanupAudioStream = () => {
-    if (energyIntervalRef.current) {
-      clearInterval(energyIntervalRef.current);
-      energyIntervalRef.current = null;
+    if (sampleIntervalRef.current) {
+      clearInterval(sampleIntervalRef.current);
+      sampleIntervalRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -81,6 +145,8 @@ export default function AudioRecorder({
 
   const startRecording = async () => {
     setErrorMessage(null);
+    setValidationSuccess(null);
+    frequencySnapshotsRef.current = [];
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -107,9 +173,8 @@ export default function AudioRecorder({
 
       const source = audioCtx.createMediaStreamSource(stream);
       source.connect(analyser);
-      sourceRef.current = source; // Keep ref to prevent Chrome GC bug
+      sourceRef.current = source;
 
-      // Store in state so AudioVisualizer re-renders and gets active analyser
       setAnalyserNode(analyser);
 
       // Setup MediaRecorder
@@ -134,20 +199,38 @@ export default function AudioRecorder({
         const finalDuration = (Date.now() - startTimeRef.current) / 1000;
         const blob = new Blob(chunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
         const url = URL.createObjectURL(blob);
-        setRecordedBlob(blob);
-        setPreviewUrl(url);
         cleanupAudioStream();
 
-        if (finalDuration < minSeconds) {
-          setErrorMessage(`Recording too short (${finalDuration.toFixed(1)}s). Minimum is ${minSeconds}s.`);
-        } else {
-          onRecordingComplete({
-            promptId,
-            blob,
-            url,
-            duration: finalDuration,
-          });
+        // Perform Voice Frequency & Pitch Dynamics Validation
+        const validation = validateVoiceFrequencyDynamics(
+          frequencySnapshotsRef.current,
+          finalDuration,
+          minSeconds
+        );
+
+        if (!validation.isValid) {
+          // Voice frequency variation missing or recording invalid -> prompt to re-record
+          setRecordedBlob(null);
+          setPreviewUrl(null);
+          setValidationSuccess(false);
+          setErrorMessage(validation.message);
+          return;
         }
+
+        // Voice frequency variation confirmed -> Accept recording
+        setRecordedBlob(blob);
+        setPreviewUrl(url);
+        setErrorMessage(null);
+        setValidationSuccess(true);
+
+        onRecordingComplete({
+          promptId,
+          blob,
+          url,
+          duration: finalDuration,
+          voiceValidated: true,
+          stats: validation.stats,
+        });
       };
 
       mediaRecorder.start(100);
@@ -155,23 +238,46 @@ export default function AudioRecorder({
       startTimeRef.current = Date.now();
       setElapsedSeconds(0);
 
-      // Inform parent that recording has started
-      if (onStart) onStart({ analyser });
+      if (onStart) onStart();
 
-      // Live voice energy polling (for visualizer + speech tracking)
-      const dataArr = new Uint8Array(analyser.frequencyBinCount);
-      energyIntervalRef.current = setInterval(() => {
-        if (analyser) {
-          analyser.getByteFrequencyData(dataArr);
-          let sum = 0;
-          for (let i = 0; i < dataArr.length; i++) {
-            sum += dataArr[i];
-          }
-          const avg = sum / dataArr.length;
-          if (onAudioEnergy) {
-            onAudioEnergy(avg);
+      // Sample frequency spectrum every 50ms to measure voice frequency & pitch variation
+      const binCount = analyser.frequencyBinCount;
+      const freqData = new Uint8Array(binCount);
+
+      sampleIntervalRef.current = setInterval(() => {
+        if (!analyser) return;
+
+        analyser.getByteFrequencyData(freqData);
+
+        // Vocal spectrum analysis across speech range (bins 1 to 45 = ~150Hz to 4000Hz)
+        let totalEnergy = 0;
+        let weightedSum = 0;
+        let peakVal = 0;
+        let peakBin = 1;
+
+        const startBin = 1;
+        const endBin = Math.min(45, binCount);
+
+        for (let i = startBin; i < endBin; i++) {
+          const val = freqData[i];
+          totalEnergy += val;
+          weightedSum += i * val;
+          if (val > peakVal) {
+            peakVal = val;
+            peakBin = i;
           }
         }
+
+        const avgEnergy = totalEnergy / (endBin - startBin);
+        const centroid = totalEnergy > 0 ? weightedSum / totalEnergy : 0;
+
+        frequencySnapshotsRef.current.push({
+          timeMs: Date.now() - startTimeRef.current,
+          energy: avgEnergy,
+          centroid: centroid,
+          peakBin: peakBin,
+          peakVal: peakVal,
+        });
       }, 50);
 
       // Duration counter
@@ -196,9 +302,9 @@ export default function AudioRecorder({
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
     }
-    if (energyIntervalRef.current) {
-      clearInterval(energyIntervalRef.current);
-      energyIntervalRef.current = null;
+    if (sampleIntervalRef.current) {
+      clearInterval(sampleIntervalRef.current);
+      sampleIntervalRef.current = null;
     }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
@@ -211,52 +317,62 @@ export default function AudioRecorder({
     setRecordedBlob(null);
     setPreviewUrl(null);
     setErrorMessage(null);
+    setValidationSuccess(null);
     setElapsedSeconds(0);
+    frequencySnapshotsRef.current = [];
     if (onRedo) onRedo(promptId);
   };
 
   return (
     <div className="recorder-box">
+      {/* Error & Re-record Warning Banner */}
       {errorMessage && (
         <div style={{
           display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem',
-          color: 'var(--accent-rose)',
+          alignItems: 'flex-start',
+          gap: '0.65rem',
+          color: '#991b1b',
           background: '#fef2f2',
-          border: '1px solid #fecaca',
-          padding: '0.7rem 1.15rem',
+          border: '1.5px solid #fecaca',
+          padding: '0.85rem 1.15rem',
           borderRadius: 'var(--radius-md)',
           width: '100%',
-          maxWidth: '480px',
-          fontSize: '0.88rem',
+          maxWidth: '560px',
+          fontSize: '0.9rem',
+          lineHeight: '1.45',
+          boxShadow: '0 2px 8px rgba(239, 68, 68, 0.08)',
         }}>
-          <AlertCircle size={17} />
-          <span>{errorMessage}</span>
+          <AlertCircle size={20} color="#dc2626" style={{ flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <strong style={{ display: 'block', color: '#b91c1c', marginBottom: '0.2rem' }}>
+              Recording Not Accepted
+            </strong>
+            <span>{errorMessage}</span>
+          </div>
         </div>
       )}
 
-      {/* Audio Visualizer */}
+      {/* Audio Waveform Visualizer */}
       <AudioVisualizer
         analyser={analyserNode}
         isRecording={isRecording}
       />
 
-      {/* Timer & Limits */}
+      {/* Timer & Window Limits */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
         gap: '0.75rem',
-        fontSize: '1.05rem',
-        fontWeight: 600,
+        fontSize: '1.1rem',
+        fontWeight: 700,
         fontFamily: 'var(--font-heading)',
         color: isRecording ? 'var(--accent-rose)' : 'var(--text-secondary)',
       }}>
         <span>
           {isRecording ? `${elapsedSeconds.toFixed(1)}s` : recordedBlob ? `${(existingRecording?.duration || elapsedSeconds).toFixed(1)}s` : '0.0s'}
         </span>
-        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-          / {maxSeconds}s max
+        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+          / {maxSeconds}s max (10–15s recommended)
         </span>
       </div>
 
@@ -279,25 +395,25 @@ export default function AudioRecorder({
             display: 'inline-flex',
             alignItems: 'center',
             gap: '0.4rem',
-            padding: '0.22rem 0.7rem',
+            padding: '0.25rem 0.8rem',
             borderRadius: '999px',
             background: isRecording ? '#fef2f2' : '#ecfdf5',
             border: `1px solid ${isRecording ? '#fecaca' : '#a7f3d0'}`,
-            fontSize: '0.76rem',
+            fontSize: '0.8rem',
             color: isRecording ? 'var(--accent-rose)' : 'var(--accent-emerald)',
-            fontWeight: 500,
+            fontWeight: 600,
           }}>
             <span style={{
-              width: '6px',
-              height: '6px',
+              width: '7px',
+              height: '7px',
               borderRadius: '50%',
               background: isRecording ? 'var(--accent-rose)' : 'var(--accent-emerald)',
               boxShadow: isRecording ? '0 0 6px var(--accent-rose)' : '0 0 6px var(--accent-emerald)',
             }} />
             <span>
               {isRecording
-                ? 'Microphone live — speak the words on screen'
-                : 'Microphone permission granted & ready'}
+                ? 'Recording active — speak the prompt clearly'
+                : 'Click microphone to record'}
             </span>
           </div>
         </div>
@@ -308,11 +424,11 @@ export default function AudioRecorder({
             alignItems: 'center',
             gap: '0.5rem',
             color: 'var(--accent-emerald)',
-            fontWeight: 600,
-            fontSize: '0.92rem',
+            fontWeight: 700,
+            fontSize: '0.95rem',
           }}>
-            <Check size={18} />
-            <span>Recording Accepted</span>
+            <Check size={19} />
+            <span>Voice Frequency & Pitch Verified ✓</span>
           </div>
 
           {previewUrl && (
@@ -337,15 +453,16 @@ export default function AudioRecorder({
       )}
 
       <p style={{
-        fontSize: '0.85rem',
+        fontSize: '0.86rem',
         color: 'var(--text-muted)',
         textAlign: 'center',
+        maxWidth: '480px',
       }}>
         {isRecording
-          ? 'Speak clearly into your microphone... As you read, words will highlight green and advance automatically!'
+          ? 'Read the prompt aloud with your natural voice. When finished, press the red stop square.'
           : recordedBlob
-          ? 'Listen to your clip above or click Re-record if you want to try again.'
-          : 'Click the microphone button to start recording.'}
+          ? 'Recording verified and saved! Listen above or re-record if needed.'
+          : 'Read the displayed prompt within 10 to 15 seconds.'}
       </p>
     </div>
   );

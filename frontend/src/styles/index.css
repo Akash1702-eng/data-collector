@@ -543,7 +543,65 @@ h1, h2, h3, h4, h5, h6 {
   gap: 0.35rem 0.5rem;
 }
 
-/* ── Word Karaoke & Teleprompter ─────────────────────────────────────── */
+/* ── Prompt Timing Header & Clean Typography ───────────────────────── */
+.prompt-timing-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 1rem;
+  margin-bottom: 1.25rem;
+  background: linear-gradient(135deg, #fffbeb, #fef3c7);
+  border: 1.5px solid #fde68a;
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 4px rgba(217, 119, 6, 0.08);
+}
+
+.timing-header-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(217, 119, 6, 0.15);
+}
+
+.timing-header-text {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+
+.timing-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #92400e;
+  line-height: 1.25;
+}
+
+.timing-subtitle {
+  font-size: 0.76rem;
+  color: #b45309;
+  font-weight: 500;
+}
+
+.prompt-clean-text {
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.7;
+  font-family: var(--font-heading), 'Noto Sans Devanagari', 'Mukta', sans-serif;
+  color: var(--text-primary);
+  text-align: center;
+  padding: 1.2rem 1rem;
+  letter-spacing: -0.01em;
+  background: #fafafa;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+
 .prompt-romanized-text,
 .prompt-text {
   font-size: 1.6rem;
@@ -553,10 +611,6 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-primary);
   text-align: center;
   padding: 1rem 0.5rem;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0.4rem 0.6rem;
 }
 
 .word-token {

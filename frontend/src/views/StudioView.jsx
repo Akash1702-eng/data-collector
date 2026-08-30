@@ -10,10 +10,10 @@ import {
   Zap,
   Volume2,
   RefreshCw,
-  Dices,
+  Clock,
+  Activity,
 } from 'lucide-react';
 import AudioRecorder from '../components/AudioRecorder';
-import { useSpeechRecognition } from '../utils/useSpeechRecognition';
 
 export default function StudioView({
   flatPrompts = [],
@@ -26,7 +26,6 @@ export default function StudioView({
 }) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [autoAdvance, setAutoAdvance] = useState(true);
-  const [stopTrigger, setStopTrigger] = useState(false);
   const [autoAdvanceCountdown, setAutoAdvanceCountdown] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
@@ -50,7 +49,6 @@ export default function StudioView({
 
   // Original native script text (Devanagari for Hindi/Marathi, English for English)
   const promptDisplayText = currentPrompt.native_text || currentPrompt.text || currentPrompt.romanized_text || '';
-  const words = promptDisplayText.trim().split(/\s+/).filter(Boolean);
 
   const isAiPrompt =
     currentPrompt.is_ai_generated ||
@@ -58,50 +56,20 @@ export default function StudioView({
     currentPrompt.type === 'open_ended' ||
     currentPrompt.id?.includes('_open_');
 
-  // Strict Speech Recognition hook — words only turn green when actually spoken
-  const {
-    isSupported,
-    isListening,
-    readWordIndex,
-    recognizedTranscript,
-    isCompleted,
-    feedAudioEnergy,
-    startListening,
-    stopListening,
-    reset: resetSpeech,
-  } = useSpeechRecognition({
-    promptText: promptDisplayText,
-    romanizedText: currentPrompt.romanized_text || '',
-    language: currentPrompt.language,
-    autoComplete: autoAdvance,
-    onAllWordsRead: () => {
-      // Trigger recording stop
-      setStopTrigger(true);
-      setTimeout(() => setStopTrigger(false), 200);
-
-      // Auto advance to next sentence if enabled
-      if (autoAdvance) {
-        setAutoAdvanceCountdown(1);
-        countdownTimerRef.current = setTimeout(() => {
-          setAutoAdvanceCountdown(null);
-          handleNext();
-        }, 1200);
-      }
-    },
-  });
-
-  // Reset speech recognition & stop trigger on prompt change
+  // Reset countdown timer when prompt changes
   useEffect(() => {
-    resetSpeech();
-    setStopTrigger(false);
     setAutoAdvanceCountdown(null);
     if (countdownTimerRef.current) {
       clearTimeout(countdownTimerRef.current);
+      countdownTimerRef.current = null;
     }
   }, [currentIndex]);
 
   const handleNext = () => {
-    if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
+    if (countdownTimerRef.current) {
+      clearTimeout(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
     setAutoAdvanceCountdown(null);
 
     if (currentIndex < totalPrompts - 1) {
@@ -115,11 +83,27 @@ export default function StudioView({
   };
 
   const handlePrev = () => {
-    if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
+    if (countdownTimerRef.current) {
+      clearTimeout(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
     setAutoAdvanceCountdown(null);
 
     if (currentIndex > 0) {
       setCurrentIndex((prev) => prev - 1);
+    }
+  };
+
+  const handleRecordingSuccess = ({ promptId, blob, url, duration, stats }) => {
+    onSaveRecording(promptId, { blob, url, duration, prompt: currentPrompt, stats });
+
+    // If auto-advance is enabled and voice frequency was validated, automatically advance
+    if (autoAdvance) {
+      setAutoAdvanceCountdown(1);
+      countdownTimerRef.current = setTimeout(() => {
+        setAutoAdvanceCountdown(null);
+        handleNext();
+      }, 1200);
     }
   };
 
@@ -134,7 +118,6 @@ export default function StudioView({
   const handleRegenerateClick = async () => {
     if (isRegenerating || !onRegeneratePrompt) return;
     setIsRegenerating(true);
-    resetSpeech();
     try {
       await onRegeneratePrompt(currentPrompt.id, currentPrompt.language);
     } catch (err) {
@@ -167,8 +150,19 @@ export default function StudioView({
         </div>
       </div>
 
-      {/* Main Prompt Card with Word Highlighting */}
+      {/* Main Prompt Card */}
       <div className="prompt-card" style={{ position: 'relative' }}>
+        {/* Timing Requirement Header Banner */}
+        <div className="prompt-timing-header">
+          <div className="timing-header-icon">
+            <Clock size={19} color="#d97706" />
+          </div>
+          <div className="timing-header-text">
+            <span className="timing-title">Read the below prompt within 10 to 15 seconds</span>
+            <span className="timing-subtitle">Natural voice pitch & frequency changes will be verified</span>
+          </div>
+        </div>
+
         {/* Top Badges & Action Bar */}
         <div style={{
           display: 'flex',
@@ -199,17 +193,11 @@ export default function StudioView({
             </span>
           )}
 
-          {isSupported && (
-            <span className="badge badge-emerald" title="Live speech tracking active">
-              🎙️ LIVE SPEECH TRACKING
-            </span>
-          )}
-
           {isAiPrompt && onRegeneratePrompt && (
             <button
               type="button"
               onClick={handleRegenerateClick}
-              disabled={isListening || isRegenerating}
+              disabled={isRegenerating}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -221,7 +209,7 @@ export default function StudioView({
                 border: '1px solid #d8b4fe',
                 background: '#faf5ff',
                 color: '#7e22ce',
-                cursor: isRegenerating || isListening ? 'not-allowed' : 'pointer',
+                cursor: isRegenerating ? 'not-allowed' : 'pointer',
                 transition: 'all 0.15s ease',
                 boxShadow: '0 1px 2px rgba(126, 34, 206, 0.08)',
                 whiteSpace: 'nowrap',
@@ -234,40 +222,24 @@ export default function StudioView({
           )}
         </div>
 
-        {/* Word-by-Word Teleprompter Rendering */}
-        <div className="prompt-romanized-text">
-          {words.map((word, wIdx) => {
-            let status = 'pending';
-            if (wIdx <= readWordIndex) {
-              status = 'read';
-            } else if (isListening && wIdx === readWordIndex + 1) {
-              status = 'current';
-            }
-
-            return (
-              <span
-                key={wIdx}
-                className={`word-token ${status}`}
-              >
-                {word}
-              </span>
-            );
-          })}
+        {/* Clean Standard Prompt Text Display (No word-by-word color changing) */}
+        <div className="prompt-clean-text">
+          {promptDisplayText}
         </div>
 
         {/* Romanized Transliteration Guide for Hindi/Marathi */}
         {currentPrompt.romanized_text && currentPrompt.romanized_text !== promptDisplayText && (
           <div style={{
-            marginTop: '0.85rem',
-            padding: '0.55rem 0.9rem',
+            marginTop: '1rem',
+            padding: '0.65rem 1rem',
             background: 'rgba(99, 102, 241, 0.04)',
             border: '1px dashed rgba(99, 102, 241, 0.25)',
             borderRadius: 'var(--radius-md)',
-            fontSize: '0.92rem',
+            fontSize: '0.96rem',
             color: '#4338ca',
             fontStyle: 'italic',
             textAlign: 'center',
-            lineHeight: '1.4',
+            lineHeight: '1.5',
           }}>
             <span style={{
               fontSize: '0.72rem',
@@ -285,42 +257,22 @@ export default function StudioView({
           </div>
         )}
 
-        {/* Live speech feedback & completion badge */}
-        {isCompleted ? (
+        {/* Auto-advance notification */}
+        {autoAdvanceCountdown !== null && (
           <div style={{ marginTop: '1rem' }}>
             <div className="sentence-completed-badge">
               <CheckCircle2 size={18} />
-              <span>
-                {autoAdvanceCountdown !== null
-                  ? `All Words Read! Auto-advancing to next sentence...`
-                  : `All Words Read! Sentence Complete`}
-              </span>
+              <span>Voice Frequency Verified! Advancing to next prompt...</span>
             </div>
           </div>
-        ) : isListening && readWordIndex >= 0 ? (
-          <div className="karaoke-status-bar">
-            <span className="speech-live-badge">
-              <Mic size={14} className="spin" />
-              <span>
-                Words Read: {Math.min(readWordIndex + 1, words.length)} / {words.length} ({Math.round(((readWordIndex + 1) / words.length) * 100)}%)
-              </span>
-            </span>
-          </div>
-        ) : isListening ? (
-          <div className="karaoke-status-bar" style={{ background: '#f8fafc', borderColor: '#e2e8f0' }}>
-            <span className="speech-live-badge" style={{ color: 'var(--text-secondary)' }}>
-              <Mic size={14} />
-              <span>Listening... Speak the words displayed on screen</span>
-            </span>
-          </div>
-        ) : null}
+        )}
 
         <div className="prompt-instruction">
           <span>💡</span>
           <span>
             {isAiPrompt
-              ? 'Read this AI-generated passage naturally at your normal speaking pace.'
-              : (currentPrompt.note || 'Read naturally at a comfortable pace.')}
+              ? 'Read this AI passage naturally at your normal speaking pace (10–15 seconds).'
+              : (currentPrompt.note || 'Read naturally at a comfortable pace within 10 to 15 seconds.')}
           </span>
         </div>
       </div>
@@ -339,7 +291,7 @@ export default function StudioView({
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
           <Zap size={15} color={autoAdvance ? '#d97706' : '#9ca3af'} />
-          <span>Auto-advance to next sentence when speech finishes</span>
+          <span>Auto-advance to next prompt when valid voice recording is complete</span>
         </div>
 
         <button
@@ -359,20 +311,8 @@ export default function StudioView({
         existingRecording={currentRecording}
         minSeconds={1.0}
         maxSeconds={15.0}
-        stopTrigger={stopTrigger}
-        onAudioEnergy={feedAudioEnergy}
-        onStart={() => {
-          resetSpeech();
-          startListening();
-        }}
-        onStop={() => {
-          stopListening();
-        }}
-        onRecordingComplete={({ promptId, blob, url, duration }) => {
-          onSaveRecording(promptId, { blob, url, duration, prompt: currentPrompt });
-        }}
+        onRecordingComplete={handleRecordingSuccess}
         onRedo={(promptId) => {
-          resetSpeech();
           onRedoRecording(promptId);
         }}
       />
