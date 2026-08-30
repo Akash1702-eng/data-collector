@@ -85,6 +85,7 @@ export default function AudioRecorder({
 }) {
   const [isRecording, setIsRecording] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [speechState, setSpeechState] = useState('idle'); // 'idle' | 'waiting_speech' | 'speaking' | 'finishing'
   const [errorMessage, setErrorMessage] = useState(null);
   const [validationSuccess, setValidationSuccess] = useState(null);
   const [recordedBlob, setRecordedBlob] = useState(existingRecording?.blob || null);
@@ -101,6 +102,11 @@ export default function AudioRecorder({
   const sampleIntervalRef = useRef(null);
   const frequencySnapshotsRef = useRef([]);
 
+  // End-of-speech silence detection refs
+  const lastVoiceTimeRef = useRef(0);
+  const voicedFramesCountRef = useRef(0);
+  const autoStopTriggeredRef = useRef(false);
+
   // Sync with existing recording if prompt changes
   useEffect(() => {
     if (existingRecording) {
@@ -114,8 +120,11 @@ export default function AudioRecorder({
     }
     setErrorMessage(null);
     setIsRecording(false);
+    setSpeechState('idle');
     setElapsedSeconds(0);
     frequencySnapshotsRef.current = [];
+    autoStopTriggeredRef.current = false;
+    voicedFramesCountRef.current = 0;
   }, [promptId, existingRecording]);
 
   // Clean up on unmount
@@ -146,7 +155,11 @@ export default function AudioRecorder({
   const startRecording = async () => {
     setErrorMessage(null);
     setValidationSuccess(null);
+    setSpeechState('waiting_speech');
     frequencySnapshotsRef.current = [];
+    lastVoiceTimeRef.current = 0;
+    voicedFramesCountRef.current = 0;
+    autoStopTriggeredRef.current = false;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -200,6 +213,7 @@ export default function AudioRecorder({
         const blob = new Blob(chunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
         const url = URL.createObjectURL(blob);
         cleanupAudioStream();
+        setSpeechState('idle');
 
         // Perform Voice Frequency & Pitch Dynamics Validation
         const validation = validateVoiceFrequencyDynamics(
@@ -270,14 +284,38 @@ export default function AudioRecorder({
 
         const avgEnergy = totalEnergy / (endBin - startBin);
         const centroid = totalEnergy > 0 ? weightedSum / totalEnergy : 0;
+        const now = Date.now();
 
         frequencySnapshotsRef.current.push({
-          timeMs: Date.now() - startTimeRef.current,
+          timeMs: now - startTimeRef.current,
           energy: avgEnergy,
           centroid: centroid,
           peakBin: peakBin,
           peakVal: peakVal,
         });
+
+        // ── Automatic End-of-Speech Detection ─────────────────────────────────
+        // When user is speaking near device:
+        if (avgEnergy >= 13) {
+          lastVoiceTimeRef.current = now;
+          voicedFramesCountRef.current += 1;
+          setSpeechState('speaking');
+        } else {
+          // When user stops speaking (silence after at least ~1.0s of active speech):
+          if (voicedFramesCountRef.current >= 18 && lastVoiceTimeRef.current > 0) {
+            const silenceMs = now - lastVoiceTimeRef.current;
+
+            if (silenceMs >= 600) {
+              setSpeechState('finishing');
+            }
+
+            // User has stopped speaking for ~1.2 seconds -> automatically finish and validate!
+            if (silenceMs >= 1200 && !autoStopTriggeredRef.current) {
+              autoStopTriggeredRef.current = true;
+              stopRecording();
+            }
+          }
+        }
       }, 50);
 
       // Duration counter
@@ -318,10 +356,53 @@ export default function AudioRecorder({
     setPreviewUrl(null);
     setErrorMessage(null);
     setValidationSuccess(null);
+    setSpeechState('idle');
     setElapsedSeconds(0);
     frequencySnapshotsRef.current = [];
+    autoStopTriggeredRef.current = false;
+    voicedFramesCountRef.current = 0;
     if (onRedo) onRedo(promptId);
   };
+
+  // Helper for dynamic pill badge based on speech state
+  const getSpeechPillContent = () => {
+    if (!isRecording) {
+      return {
+        bg: '#ecfdf5',
+        border: '#a7f3d0',
+        color: 'var(--accent-emerald)',
+        dotColor: 'var(--accent-emerald)',
+        text: 'Click microphone to record',
+      };
+    }
+    if (speechState === 'finishing') {
+      return {
+        bg: '#f0fdf4',
+        border: '#86efac',
+        color: '#15803d',
+        dotColor: '#16a34a',
+        text: '🤫 Speech finished — validating & moving to next prompt...',
+      };
+    }
+    if (speechState === 'speaking') {
+      return {
+        bg: '#ecfdf5',
+        border: '#6ee7b7',
+        color: '#047857',
+        dotColor: '#059669',
+        text: '🗣️ Voice detected — keep reading...',
+      };
+    }
+    return {
+      bg: '#fef2f2',
+      border: '#fecaca',
+      color: 'var(--accent-rose)',
+      dotColor: 'var(--accent-rose)',
+      text: '🎙️ Speak prompt near your microphone...',
+    };
+  };
+
+  const pill = getSpeechPillContent();
 
   return (
     <div className="recorder-box">
@@ -394,27 +475,24 @@ export default function AudioRecorder({
           <div style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '0.4rem',
-            padding: '0.25rem 0.8rem',
+            gap: '0.45rem',
+            padding: '0.28rem 0.9rem',
             borderRadius: '999px',
-            background: isRecording ? '#fef2f2' : '#ecfdf5',
-            border: `1px solid ${isRecording ? '#fecaca' : '#a7f3d0'}`,
+            background: pill.bg,
+            border: `1px solid ${pill.border}`,
             fontSize: '0.8rem',
-            color: isRecording ? 'var(--accent-rose)' : 'var(--accent-emerald)',
+            color: pill.color,
             fontWeight: 600,
+            transition: 'all 0.2s ease',
           }}>
             <span style={{
               width: '7px',
               height: '7px',
               borderRadius: '50%',
-              background: isRecording ? 'var(--accent-rose)' : 'var(--accent-emerald)',
-              boxShadow: isRecording ? '0 0 6px var(--accent-rose)' : '0 0 6px var(--accent-emerald)',
+              background: pill.dotColor,
+              boxShadow: `0 0 6px ${pill.dotColor}`,
             }} />
-            <span>
-              {isRecording
-                ? 'Recording active — speak the prompt clearly'
-                : 'Click microphone to record'}
-            </span>
+            <span>{pill.text}</span>
           </div>
         </div>
       ) : (
@@ -459,7 +537,7 @@ export default function AudioRecorder({
         maxWidth: '480px',
       }}>
         {isRecording
-          ? 'Read the prompt aloud with your natural voice. When finished, press the red stop square.'
+          ? 'Read the prompt aloud near your device. When you stop speaking, it will automatically validate and advance!'
           : recordedBlob
           ? 'Recording verified and saved! Listen above or re-record if needed.'
           : 'Read the displayed prompt within 10 to 15 seconds.'}
