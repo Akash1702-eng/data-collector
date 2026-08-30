@@ -154,7 +154,6 @@ export default function App() {
     <div className="app-container">
       <Navbar
         onNavigate={(view) => setCurrentView(view)}
-        contributorCount={contributorCount}
       />
 
       <main style={{ flex: 1 }}>
